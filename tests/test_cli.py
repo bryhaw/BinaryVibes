@@ -20,7 +20,7 @@ def _run(*args: str) -> object:
 def test_cli_version():
     result = _run("--version")
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert "1.0.0" in result.output
 
 
 def test_cli_help():

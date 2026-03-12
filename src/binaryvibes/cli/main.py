@@ -218,3 +218,157 @@ def generate(arch: str, asm: str, output: str) -> None:
     except Exception as exc:
         click.echo(f"Generate error: {exc}", err=True)
         raise SystemExit(1) from None
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--offset", "-o", default="0", type=str, help="Code region offset (hex or decimal)")
+@click.option("--size", "-s", default=None, type=str, help="Code region size (hex or decimal)")
+@click.option("--no-imports", is_flag=True, help="Skip dangerous-import checks")
+@click.option("--no-patterns", is_flag=True, help="Skip suspicious-pattern checks")
+@click.option("--no-cfg", is_flag=True, help="Skip CFG complexity checks")
+def audit(
+    path: str, offset: str, size: str | None, no_imports: bool, no_patterns: bool, no_cfg: bool
+) -> None:
+    """Run a security audit on a binary."""
+    from binaryvibes.core.binary import BinaryFile
+    from binaryvibes.workflows.audit import audit_binary
+
+    try:
+        code_offset = int(offset, 0)
+        code_size = int(size, 0) if size else None
+    except ValueError as exc:
+        click.echo(f"Invalid offset/size: {exc}", err=True)
+        raise SystemExit(1) from None
+
+    try:
+        bf = BinaryFile.from_path(path)
+        report = audit_binary(
+            bf,
+            check_imports=not no_imports,
+            check_patterns=not no_patterns,
+            check_cfg=not no_cfg,
+            code_offset=code_offset,
+            code_size=code_size,
+        )
+        click.echo(report.detailed_report())
+    except Exception as exc:
+        click.echo(f"Audit error: {exc}", err=True)
+        raise SystemExit(1) from None
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--target", "-t", required=True, type=str, help="Target function offset (hex or decimal)"
+)
+@click.option("--hook", "-k", required=True, type=str, help="Hook code offset (hex or decimal)")
+@click.option("--output", "-O", required=True, type=click.Path(), help="Output file path")
+@click.option("--arch", "-a", default="x86_64", type=click.Choice([a.value for a in Arch]))
+def hook(path: str, target: str, hook: str, output: str, arch: str) -> None:
+    """Hook a function by inserting a JMP trampoline."""
+    from binaryvibes.core.binary import BinaryFile
+    from binaryvibes.workflows.hooking import hook_function
+
+    try:
+        target_offset = int(target, 0)
+        hook_offset = int(hook, 0)
+    except ValueError as exc:
+        click.echo(f"Invalid offset: {exc}", err=True)
+        raise SystemExit(1) from None
+
+    try:
+        bf = BinaryFile.from_path(path)
+        result = hook_function(bf, target_offset, hook_offset, Arch(arch))
+        with open(output, "wb") as f:
+            f.write(result.patched_binary.raw)
+        click.echo(
+            f"Hooked 0x{target_offset:x} → 0x{hook_offset:x}"
+            f" ({result.hook_count} hook(s)) → {output}"
+        )
+    except Exception as exc:
+        click.echo(f"Hook error: {exc}", err=True)
+        raise SystemExit(1) from None
+
+
+def _parse_offset_value(spec: str) -> tuple[int, int]:
+    """Parse an 'offset:value' specification into (offset, value) ints."""
+    parts = spec.split(":", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Expected 'offset:value' format, got '{spec}'")
+    return int(parts[0], 0), int(parts[1], 0)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--nop", multiple=True, help="NOP out a region (offset:size, repeatable)")
+@click.option("--force-return", multiple=True, help="Force return value (offset:value, repeatable)")
+@click.option("--redirect", multiple=True, help="Redirect jump (offset:target, repeatable)")
+@click.option("--output", "-O", required=True, type=click.Path(), help="Output file path")
+@click.option("--arch", "-a", default="x86_64", type=click.Choice([a.value for a in Arch]))
+def harden(
+    path: str,
+    nop: tuple[str, ...],
+    force_return: tuple[str, ...],
+    redirect: tuple[str, ...],
+    output: str,
+    arch: str,
+) -> None:
+    """Apply hardening operations to a binary."""
+    from binaryvibes.core.binary import BinaryFile
+    from binaryvibes.workflows.hardening import BinaryHardener
+
+    try:
+        bf = BinaryFile.from_path(path)
+        hardener = BinaryHardener(Arch(arch))
+
+        for spec in nop:
+            off, sz = _parse_offset_value(spec)
+            hardener.nop_out(off, sz)
+
+        for spec in force_return:
+            off, val = _parse_offset_value(spec)
+            hardener.force_return(off, val)
+
+        for spec in redirect:
+            off, tgt = _parse_offset_value(spec)
+            hardener.redirect(off, tgt)
+
+        result = hardener.apply(bf)
+        with open(output, "wb") as f:
+            f.write(result.patched_binary.raw)
+        click.echo(result.summary())
+        click.echo(f"Output → {output}")
+    except ValueError as exc:
+        click.echo(f"Invalid argument: {exc}", err=True)
+        raise SystemExit(1) from None
+    except Exception as exc:
+        click.echo(f"Harden error: {exc}", err=True)
+        raise SystemExit(1) from None
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--offset", "-o", required=True, type=str, help="Function offset (hex or decimal)")
+@click.option("--size", "-s", default=None, type=str, help="Code region size (hex or decimal)")
+@click.option("--name", "-n", default="", help="Function name label")
+@click.option("--arch", "-a", default="x86_64", type=click.Choice([a.value for a in Arch]))
+def analyze(path: str, offset: str, size: str | None, name: str, arch: str) -> None:
+    """Deep analysis of a function or code region."""
+    from binaryvibes.core.binary import BinaryFile
+    from binaryvibes.workflows.analysis import analyze_function
+
+    try:
+        func_offset = int(offset, 0)
+        func_size = int(size, 0) if size else None
+    except ValueError as exc:
+        click.echo(f"Invalid offset/size: {exc}", err=True)
+        raise SystemExit(1) from None
+
+    try:
+        bf = BinaryFile.from_path(path)
+        analysis = analyze_function(bf, func_offset, func_size, name=name, arch=Arch(arch))
+        click.echo(analysis.summary())
+    except Exception as exc:
+        click.echo(f"Analysis error: {exc}", err=True)
+        raise SystemExit(1) from None

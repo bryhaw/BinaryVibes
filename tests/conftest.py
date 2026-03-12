@@ -8,7 +8,10 @@ from pathlib import Path
 import keystone
 import pytest
 
+from binaryvibes.core.arch import Arch
 from binaryvibes.core.binary import BinaryFile
+from binaryvibes.synthesis.assembler import Assembler
+from binaryvibes.synthesis.generator import BinaryBuilder
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -114,3 +117,135 @@ def tiny_elf_binary(tiny_elf: Path) -> BinaryFile:
 def x86_code_bytes() -> bytes:
     """Raw assembled x86_64 bytes: mov rax,60; mov rdi,42; syscall."""
     return _assemble_x86_64("mov rax, 60; mov rdi, 42; syscall")
+
+
+# ── Complex fixture generators ──────────────────────────────────────
+
+# Code starts after ELF64 header (64) + program header (56) = 120 = 0x78
+_CODE_VADDR = 0x400078
+
+
+def _generate_multi_func_elf(dest: Path) -> Path:
+    """Build an ELF with multiple functions calling each other."""
+    asm = Assembler(Arch.X86_64)
+    code = asm.assemble(
+        """
+        func_add:
+            mov rax, rdi
+            add rax, rsi
+            ret
+        func_double:
+            mov rsi, rdi
+            call func_add
+            ret
+        main:
+            mov rdi, 10
+            mov rsi, 20
+            call func_add
+            mov rdi, rax
+            call func_double
+            mov rdi, rax
+            mov rax, 60
+            syscall
+        """,
+        _CODE_VADDR,
+    )
+    binary = BinaryBuilder().set_arch(Arch.X86_64).add_code(code).build()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(binary.raw)
+    return dest
+
+
+def _generate_vuln_elf(dest: Path) -> Path:
+    """Build an ELF with 'vulnerable' patterns for security audit demos."""
+    asm = Assembler(Arch.X86_64)
+    code = asm.assemble(
+        """
+        start:
+            xor rax, rax
+            call dangerous_func
+            mov rdi, rax
+            call another_func
+            test rax, rax
+            je skip_check
+            nop
+            nop
+            nop
+            nop
+            nop
+        skip_check:
+            xor rdi, rdi
+            mov rax, 60
+            syscall
+        dangerous_func:
+            mov rax, 1
+            ret
+        another_func:
+            mov rax, 0
+            ret
+        """,
+        _CODE_VADDR,
+    )
+    binary = BinaryBuilder().set_arch(Arch.X86_64).add_code(code).build()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(binary.raw)
+    return dest
+
+
+def _generate_padded_elf(dest: Path) -> Path:
+    """Build an ELF with NOP padding for transplant/hooking demos."""
+    asm = Assembler(Arch.X86_64)
+    code = asm.assemble("mov rax, 42; ret", _CODE_VADDR)
+    padding = b"\x90" * 256
+    binary = BinaryBuilder().set_arch(Arch.X86_64).add_code(code + padding).build()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(binary.raw)
+    return dest
+
+
+# ── Complex fixtures ────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def multi_func_elf() -> Path:
+    """Path to an ELF with multiple inter-calling functions."""
+    path = FIXTURES_DIR / "multi_func_elf"
+    if not path.exists():
+        _generate_multi_func_elf(path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def multi_func_binary(multi_func_elf: Path) -> BinaryFile:
+    """A loaded BinaryFile from the multi-function ELF fixture."""
+    return BinaryFile.from_path(multi_func_elf)
+
+
+@pytest.fixture(scope="session")
+def vuln_elf() -> Path:
+    """Path to an ELF with vulnerable code patterns."""
+    path = FIXTURES_DIR / "vuln_elf"
+    if not path.exists():
+        _generate_vuln_elf(path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def vuln_binary(vuln_elf: Path) -> BinaryFile:
+    """A loaded BinaryFile from the vulnerable ELF fixture."""
+    return BinaryFile.from_path(vuln_elf)
+
+
+@pytest.fixture(scope="session")
+def padded_elf() -> Path:
+    """Path to an ELF with NOP padding for hook space."""
+    path = FIXTURES_DIR / "padded_elf"
+    if not path.exists():
+        _generate_padded_elf(path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def padded_binary(padded_elf: Path) -> BinaryFile:
+    """A loaded BinaryFile from the padded ELF fixture."""
+    return BinaryFile.from_path(padded_elf)
