@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import subprocess
+import tempfile
 from dataclasses import dataclass
 
 from binaryvibes.core.arch import Arch, BinaryFormat, detect_native_format
@@ -41,6 +45,8 @@ class BuildResult:
     emulation_result: EmulationResult | None = None
     llm_model: str = ""
     retries_used: int = 0
+    run_output: str | None = None
+    run_exit_code: int | None = None
 
 
 def _entry_point(arch: Arch, fmt: BinaryFormat = BinaryFormat.ELF) -> int:
@@ -80,12 +86,41 @@ class BuildAgent:
         fmt: BinaryFormat | None = None,
         max_retries: int = 3,
         verify: bool = True,
+        run_verify: bool = False,
     ):
         self.provider = provider
         self.arch = arch
         self.fmt = fmt or detect_native_format()
         self.max_retries = max_retries
         self.verify = verify
+        self.run_verify = run_verify
+
+    def _run_binary(self, binary_data: bytes, timeout: float = 10.0) -> tuple[int, str]:
+        """Run a PE binary and capture output. Returns (exit_code, stdout)."""
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
+            f.write(binary_data)
+            tmp_path = f.name
+
+        try:
+            kwargs: dict = {
+                "capture_output": True,
+                "timeout": timeout,
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+            # Suppress console window on Windows
+            if os.name == "nt":
+                kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
+            result = subprocess.run([tmp_path], **kwargs)
+            return result.returncode, result.stdout
+        except subprocess.TimeoutExpired:
+            return -1, "[TIMEOUT: program did not exit within 10 seconds]"
+        except Exception as e:
+            return -1, f"[RUN ERROR: {e}]"
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
 
     def build(self, description: str) -> BuildResult:
         """Build a binary from a natural language description.
@@ -104,6 +139,8 @@ class BuildAgent:
         last_error = ""
         retries_used = 0
         llm_model = ""
+        run_output: str | None = None
+        run_exit_code: int | None = None
 
         for attempt in range(1 + self.max_retries):
             # Get assembly from LLM
@@ -138,6 +175,17 @@ class BuildAgent:
 
                 assembly = assembly + "\n" + PE_RUNTIME_ASM
 
+            # Strip ; comments (LLMs often add them, Keystone rejects them)
+            cleaned_lines = []
+            for line in assembly.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith(";"):
+                    continue  # skip full-line comments
+                if ";" in line and ".asciz" not in line.lower() and ".byte" not in line.lower():
+                    line = line.split(";")[0]
+                cleaned_lines.append(line)
+            assembly = "\n".join(cleaned_lines)
+
             # Try to assemble
             try:
                 entry = _entry_point(plan.arch, self.fmt)
@@ -168,6 +216,43 @@ class BuildAgent:
                 except Exception as e:
                     logger.warning("Emulation setup failed: %s", e)
 
+            # Runtime verification (PE only)
+            if self.run_verify and self.fmt == BinaryFormat.PE:
+                exit_code, stdout = self._run_binary(binary.raw)
+                run_output = stdout
+                run_exit_code = exit_code
+
+                is_crash = (exit_code < 0) or (exit_code > 255)
+                if is_crash:
+                    logger.warning(
+                        "Runtime crash (attempt %d): exit=%d", attempt + 1, exit_code
+                    )
+                    crash_msg = (
+                        f"The binary assembled correctly but CRASHED at runtime.\n"
+                        f"Exit code: {exit_code} (0xC0000005 = access violation)\n"
+                        f"Stdout before crash: "
+                        f"{stdout[:500] if stdout else '(none)'}\n\n"
+                        f"Common causes of crashes in Windows PE assembly:\n"
+                        f"- Forgetting sub rsp, 0x28 before API calls "
+                        f"(need shadow space)\n"
+                        f"- Using caller-saved registers (rax,rcx,rdx,r8-r11) "
+                        f"across API calls without saving them\n"
+                        f"- Wrong argument count or order for Windows API "
+                        f"functions\n"
+                        f"- Stack misalignment (RSP must be 16-byte aligned "
+                        f"before call)\n"
+                        f"- Buffer overflow (writing past allocated stack "
+                        f"space)\n\n"
+                        f"Fix the assembly and try again."
+                    )
+                    messages = [
+                        *messages,
+                        {"role": "assistant", "content": response.content},
+                        {"role": "user", "content": crash_msg},
+                    ]
+                    retries_used += 1
+                    continue
+
             return BuildResult(
                 binary=binary,
                 assembly=plan.assembly,
@@ -178,6 +263,8 @@ class BuildAgent:
                 emulation_result=emulation_result,
                 llm_model=llm_model,
                 retries_used=retries_used,
+                run_output=run_output,
+                run_exit_code=run_exit_code,
             )
 
         # All retries exhausted

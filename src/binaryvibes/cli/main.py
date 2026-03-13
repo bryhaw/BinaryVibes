@@ -394,6 +394,8 @@ def analyze(path: str, offset: str, size: str | None, name: str, arch: str) -> N
 @click.option("--api-key", default=None, help="LLM API key (or set BV_LLM_API_KEY)")
 @click.option("--base-url", default=None, help="API base URL (OpenAI-compatible providers)")
 @click.option("--verify/--no-verify", default=True, help="Verify via emulation")
+@click.option("--run-verify/--no-run-verify", default=False,
+              help="Run the binary and verify it doesn't crash (PE only)")
 @click.option("--retries", default=3, help="Max LLM retries on assembly failure")
 def build(
     description: str,
@@ -405,6 +407,7 @@ def build(
     api_key: str | None,
     base_url: str | None,
     verify: bool,
+    run_verify: bool,
     retries: int,
 ) -> None:
     """Build a binary from a natural language description using an LLM.
@@ -437,7 +440,8 @@ def build(
 
     target_arch = Arch(arch)
     target_fmt = BinaryFormat(fmt) if fmt else None
-    agent = BuildAgent(llm, arch=target_arch, fmt=target_fmt, max_retries=retries, verify=verify)
+    agent = BuildAgent(llm, arch=target_arch, fmt=target_fmt, max_retries=retries, verify=verify,
+                       run_verify=run_verify)
 
     click.echo(f"Building: {description}")
     click.echo(f"Target:   {target_arch.value}")
@@ -473,5 +477,13 @@ def build(
 
     if result.retries_used > 0:
         click.echo(f"LLM retries: {result.retries_used}")
+
+    if result.run_exit_code is not None:
+        if 0 <= result.run_exit_code <= 255:
+            click.echo(f"Runtime: PASSED (exit code {result.run_exit_code})")
+        else:
+            click.echo(f"Runtime: CRASHED (exit code {result.run_exit_code})")
+    if result.run_output:
+        click.echo(f"Output: {result.run_output.strip()[:200]}")
 
     click.echo(f"Output: {output}")

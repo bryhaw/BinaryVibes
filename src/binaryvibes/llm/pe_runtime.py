@@ -362,4 +362,70 @@ __bv_wfh_ret:
   ret
 
 __bv_open_verb: .asciz "open"
+
+__bv_html_dashboard:
+  push rbx
+  push rsi
+  push rdi
+  push r12
+  push r13
+  sub rsp, 0x4040
+  mov r12, rcx
+  mov r13, rdx
+
+  lea rdi, [rsp+0x20]
+  mov rbx, rdi
+
+  lea rsi, [rip+__bv_hd_head]
+  __bv_hd_c1:
+  mov al, byte ptr [rsi]
+  test al, al
+  jz __bv_hd_c1d
+  mov byte ptr [rdi], al
+  inc rsi
+  inc rdi
+  jmp __bv_hd_c1
+  __bv_hd_c1d:
+
+  mov rsi, r12
+  __bv_hd_c2:
+  mov al, byte ptr [rsi]
+  test al, al
+  jz __bv_hd_c2d
+  mov byte ptr [rdi], al
+  inc rsi
+  inc rdi
+  jmp __bv_hd_c2
+  __bv_hd_c2d:
+
+  lea rsi, [rip+__bv_hd_tail]
+  __bv_hd_c3:
+  mov al, byte ptr [rsi]
+  test al, al
+  jz __bv_hd_c3d
+  mov byte ptr [rdi], al
+  inc rsi
+  inc rdi
+  jmp __bv_hd_c3
+  __bv_hd_c3d:
+
+  mov r8, rdi
+  sub r8, rbx
+  mov rcx, r13
+  mov rdx, rbx
+  call __bv_write_file_helper
+
+  mov rcx, r13
+  call __bv_open_url
+
+  add rsp, 0x4040
+  pop r13
+  pop r12
+  pop rdi
+  pop rsi
+  pop rbx
+  ret
+
+__bv_hd_head: .asciz "<html><head><meta charset=utf-8><title>BinaryVibes Dashboard</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Consolas,Monaco,monospace;background:#1e1e2e;color:#cdd6f4;padding:40px;max-width:960px;margin:0 auto}h1{color:#89b4fa;font-size:24px;margin-bottom:8px}p.sub{color:#a6adc8;margin-bottom:24px;font-size:14px}pre{background:#313244;color:#cdd6f4;padding:24px;border-radius:12px;overflow-x:auto;line-height:1.5;font-size:13px;white-space:pre-wrap}</style></head><body><h1>BinaryVibes Dashboard</h1><p class=sub>Generated binary - no compiler, no runtime</p><pre>"
+__bv_hd_tail: .asciz "</pre><footer style=text-align:center;color:#585b70;margin-top:32px;font-size:12px>Powered by BinaryVibes | From English to native binary</footer></body></html>"
 """

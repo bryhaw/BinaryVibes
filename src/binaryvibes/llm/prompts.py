@@ -127,6 +127,10 @@ PRE-DEFINED UTILITY FUNCTIONS — automatically available, just call them:
     Fills buffer with computer name (buffer must be >=256 bytes)
   __bv_get_pid() -> rax=process_id
     Returns current process ID
+  __bv_html_dashboard(rcx=body_text, rdx=filename_ptr)
+    Wraps body text in a styled HTML page, writes to file, opens in browser.
+    Use for any output that benefits from rich formatting.
+    Example: fetch data, then call __bv_html_dashboard to display it beautifully.
 
   IMPORTANT: These helpers save and restore registers properly.
   Use callee-saved registers (rbx, r12-r15) for values that must survive across calls.
@@ -413,6 +417,43 @@ FEW_SHOT_EXAMPLES: dict[tuple[Arch, BinaryFormat], list[dict[str, str]]] = {
                     'errmsg: .asciz "Error: HTTP request failed"'
                 ),
                 "description": "Fetches example.com via HTTP and prints the response",
+            }),
+        },
+        {
+            "user": "fetch weather for Seattle and display it as an HTML dashboard",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": (
+                    "sub rsp, 0x2028\n"
+                    "lea rcx, [rip+url]\n"
+                    "lea rdx, [rsp+0x20]\n"
+                    "mov r8, 8000\n"
+                    "call __bv_http_get\n"
+                    "test rax, rax\n"
+                    "jz fail\n"
+                    "lea rcx, [rsp+0x20]\n"
+                    "lea rdx, [rip+fname]\n"
+                    "call __bv_html_dashboard\n"
+                    "lea rcx, [rip+donemsg]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "xor ecx, ecx\n"
+                    "jmp exit\n"
+                    "fail:\n"
+                    "lea rcx, [rip+errmsg]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "mov ecx, 1\n"
+                    "exit:\n"
+                    "mov eax, 0x402000\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    'url: .asciz "http://wttr.in/Seattle?format=4"\n'
+                    'fname: .asciz "weather.html"\n'
+                    'donemsg: .asciz "Dashboard opened in browser!"\n'
+                    'errmsg: .asciz "Error: could not fetch weather"'
+                ),
+                "description": "Fetches Seattle weather and displays as styled HTML dashboard",
             }),
         },
     ],

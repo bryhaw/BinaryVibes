@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -257,3 +258,122 @@ class TestBuildAgentWithFormat:
         agent = BuildAgent(provider, arch=Arch.X86_64, fmt=BinaryFormat.ELF, verify=False)
         result = agent.build("exit 0")
         assert result.fmt == BinaryFormat.ELF
+
+
+class TestRunVerify:
+    def test_build_result_has_run_fields(self):
+        """BuildResult includes run_output and run_exit_code fields."""
+        from binaryvibes.synthesis.generator import BinaryBuilder
+
+        binary = (
+            BinaryBuilder().set_arch(Arch.X86_64).add_code(b"\xc3").build()
+        )
+        result = BuildResult(
+            binary=binary,
+            assembly="ret",
+            arch=Arch.X86_64,
+            fmt=BinaryFormat.ELF,
+            description="test",
+            verified=False,
+            run_output="hello",
+            run_exit_code=0,
+        )
+        assert result.run_output == "hello"
+        assert result.run_exit_code == 0
+
+    def test_build_result_run_fields_default_none(self):
+        """BuildResult run fields default to None."""
+        from binaryvibes.synthesis.generator import BinaryBuilder
+
+        binary = (
+            BinaryBuilder().set_arch(Arch.X86_64).add_code(b"\xc3").build()
+        )
+        result = BuildResult(
+            binary=binary,
+            assembly="ret",
+            arch=Arch.X86_64,
+            fmt=BinaryFormat.ELF,
+            description="test",
+            verified=False,
+        )
+        assert result.run_output is None
+        assert result.run_exit_code is None
+
+    def test_run_verify_skipped_for_elf(self):
+        """Runtime verification is skipped for non-PE formats."""
+        llm_response = json.dumps({
+            "arch": "x86_64",
+            "assembly": "mov rax, 60\nxor rdi, rdi\nsyscall",
+            "description": "Exit 0",
+        })
+        provider = _mock_provider([llm_response])
+        agent = BuildAgent(
+            provider, arch=Arch.X86_64, fmt=BinaryFormat.ELF,
+            verify=False, run_verify=True,
+        )
+        result = agent.build("exit 0")
+        assert result.run_output is None
+        assert result.run_exit_code is None
+
+    def test_run_verify_success(self):
+        """Runtime verification captures successful exit."""
+        llm_response = json.dumps({
+            "arch": "x86_64",
+            "assembly": "mov ecx, 0\nsub rsp, 0x28\nmov rax, qword ptr [0x402000]\ncall rax",
+            "description": "Exits with code 0",
+        })
+        provider = _mock_provider([llm_response])
+        agent = BuildAgent(
+            provider, arch=Arch.X86_64, fmt=BinaryFormat.PE,
+            verify=False, run_verify=True,
+        )
+
+        with patch.object(agent, "_run_binary", return_value=(0, "hello")):
+            result = agent.build("exit 0")
+
+        assert result.run_exit_code == 0
+        assert result.run_output == "hello"
+        assert result.retries_used == 0
+
+    def test_run_verify_crash_triggers_retry(self):
+        """Runtime crash feeds error back to LLM for correction."""
+        good_response = json.dumps({
+            "arch": "x86_64",
+            "assembly": "mov ecx, 0\nsub rsp, 0x28\nmov rax, qword ptr [0x402000]\ncall rax",
+            "description": "Exits with code 0",
+        })
+        provider = _mock_provider([good_response, good_response])
+        agent = BuildAgent(
+            provider, arch=Arch.X86_64, fmt=BinaryFormat.PE,
+            verify=False, run_verify=True, max_retries=3,
+        )
+
+        # First call crashes, second call succeeds
+        with patch.object(
+            agent, "_run_binary",
+            side_effect=[(-1073741819, ""), (0, "ok")],
+        ):
+            result = agent.build("exit 0")
+
+        assert result.run_exit_code == 0
+        assert result.run_output == "ok"
+        assert result.retries_used == 1
+
+    def test_run_binary_timeout(self):
+        """_run_binary handles timeout gracefully."""
+        agent = BuildAgent(MagicMock(), verify=False)
+
+        with (
+            patch("binaryvibes.llm.agent.subprocess.run",
+                  side_effect=subprocess.TimeoutExpired(cmd="test", timeout=10)),
+            patch("binaryvibes.llm.agent.tempfile.NamedTemporaryFile") as mock_tmp,
+        ):
+            mock_tmp.return_value.__enter__ = lambda s: s
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_tmp.return_value.write = MagicMock()
+            mock_tmp.return_value.name = "fake.exe"
+            with patch("binaryvibes.llm.agent.os.unlink"):
+                exit_code, output = agent._run_binary(b"\x00")
+
+        assert exit_code == -1
+        assert "TIMEOUT" in output

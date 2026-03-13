@@ -145,7 +145,7 @@ def _build_idata_section() -> tuple[bytes, int, int, int]:
     dll_ilt_offsets: dict[str, int] = {}
 
     current_offset = 0
-    for dll_name, functions in _PE_IMPORTS.items():
+    for dll_name, _functions in _PE_IMPORTS.items():
         dll_iat_offsets[dll_name] = current_offset
         dll_ilt_offsets[dll_name] = total_table_size + current_offset
 
