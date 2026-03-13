@@ -4,6 +4,7 @@ from binaryvibes.core.arch import BinaryFormat
 from binaryvibes.llm.agent import BuildAgent, BuildResult
 from binaryvibes.llm.provider import (
     AnthropicProvider,
+    GitHubModelsProvider,
     LLMError,
     LLMProvider,
     OpenAIProvider,
@@ -15,6 +16,7 @@ __all__ = [
     "BinaryFormat",
     "BuildAgent",
     "BuildResult",
+    "GitHubModelsProvider",
     "LLMError",
     "LLMProvider",
     "OpenAIProvider",

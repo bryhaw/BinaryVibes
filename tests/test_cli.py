@@ -86,9 +86,17 @@ def test_build_command_missing_api_key(monkeypatch):
     """bv build should fail gracefully when no API key is configured."""
     monkeypatch.delenv("BV_LLM_API_KEY", raising=False)
     monkeypatch.delenv("BV_LLM_PROVIDER", raising=False)
+
+    # Also ensure GitHub Models auto-detect doesn't kick in
+    import subprocess
+
+    def mock_run(*args, **kwargs):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
     result = _run("build", "a program that exits with code 42")
     assert result.exit_code == 1
-    assert "API key" in result.output or "Configuration error" in result.output
+    assert "No LLM provider configured" in result.output or "Configuration error" in result.output
 
 
 # ── format option tests ─────────────────────────────────────────────

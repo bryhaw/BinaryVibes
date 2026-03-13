@@ -9,6 +9,7 @@ import pytest
 
 from binaryvibes.llm.provider import (
     AnthropicProvider,
+    GitHubModelsProvider,
     LLMError,
     LLMResponse,
     OpenAIProvider,
@@ -189,7 +190,15 @@ class TestCreateProvider:
 
     def test_missing_api_key(self, monkeypatch):
         monkeypatch.delenv("BV_LLM_API_KEY", raising=False)
-        with pytest.raises(LLMError, match="No API key"):
+        monkeypatch.delenv("BV_LLM_PROVIDER", raising=False)
+        # Ensure GitHub Models is not available so we hit the error path
+        import subprocess
+
+        def mock_run(*args, **kwargs):
+            raise FileNotFoundError()
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        with pytest.raises(LLMError, match="No LLM provider configured"):
             create_provider()
 
     def test_custom_model_from_env(self, monkeypatch):
@@ -205,3 +214,77 @@ class TestCreateProvider:
         p = create_provider()
         assert isinstance(p, OpenAIProvider)
         assert "localhost" in p.base_url
+
+
+class TestGitHubModelsProvider:
+    def test_inherits_openai(self):
+        assert issubclass(GitHubModelsProvider, OpenAIProvider)
+
+    def test_default_model(self):
+        p = GitHubModelsProvider(api_key="test-token")
+        assert p.model == "gpt-4o"
+        assert "models.inference.ai.azure.com" in p.base_url
+
+    def test_custom_model(self):
+        p = GitHubModelsProvider(api_key="test-token", model="gpt-4o-mini")
+        assert p.model == "gpt-4o-mini"
+
+    def test_is_available_with_mock(self, monkeypatch):
+        import subprocess
+
+        def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "gho_fake_token"
+            return result
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        assert GitHubModelsProvider.is_available() is True
+
+    def test_is_available_no_gh(self, monkeypatch):
+        import subprocess
+
+        def mock_run(*args, **kwargs):
+            raise FileNotFoundError()
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        assert GitHubModelsProvider.is_available() is False
+
+
+class TestCreateProviderAutoDetect:
+    def test_github_auto_detect(self, monkeypatch):
+        monkeypatch.delenv("BV_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("BV_LLM_PROVIDER", raising=False)
+        import subprocess
+
+        def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "gho_fake_token"
+            return result
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        p = create_provider()
+        assert isinstance(p, GitHubModelsProvider)
+
+    def test_explicit_github_provider(self, monkeypatch):
+        monkeypatch.delenv("BV_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("BV_LLM_PROVIDER", raising=False)
+        import subprocess
+
+        def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "gho_fake_token"
+            return result
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        p = create_provider(provider="github")
+        assert isinstance(p, GitHubModelsProvider)
+
+    def test_api_key_takes_precedence(self, monkeypatch):
+        monkeypatch.delenv("BV_LLM_PROVIDER", raising=False)
+        monkeypatch.setenv("BV_LLM_API_KEY", "sk-test")
+        p = create_provider()
+        assert isinstance(p, OpenAIProvider)
+        assert not isinstance(p, GitHubModelsProvider)

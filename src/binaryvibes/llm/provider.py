@@ -93,6 +93,72 @@ class OpenAIProvider(LLMProvider):
             raise LLMError(f"Unexpected response format: {data}") from e
 
 
+class GitHubModelsProvider(OpenAIProvider):
+    """Provider for GitHub Models API — uses GitHub auth, no extra API key needed.
+
+    Requires the GitHub CLI (gh) to be installed and authenticated.
+    Uses GPT-4o by default via the GitHub Models inference endpoint.
+    """
+
+    GITHUB_MODELS_URL = "https://models.inference.ai.azure.com"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gpt-4o",
+        timeout: float = 120.0,
+    ):
+        if not api_key:
+            api_key = self._get_gh_token()
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            base_url=self.GITHUB_MODELS_URL,
+            timeout=timeout,
+        )
+
+    @staticmethod
+    def _get_gh_token() -> str:
+        """Get GitHub auth token from gh CLI."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            token = result.stdout.strip()
+            if result.returncode != 0 or not token:
+                raise LLMError(
+                    "Failed to get GitHub token. Run 'gh auth login' first."
+                )
+            return token
+        except FileNotFoundError:
+            raise LLMError(
+                "GitHub CLI (gh) not found. Install it from https://cli.github.com"
+            )
+        except subprocess.TimeoutExpired:
+            raise LLMError("Timed out getting GitHub token from gh CLI.")
+
+    @staticmethod
+    def is_available() -> bool:
+        """Check if gh CLI is available and authenticated."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0 and bool(result.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+
 class AnthropicProvider(LLMProvider):
     """Provider for Anthropic's Messages API."""
 
@@ -167,29 +233,60 @@ def create_provider(
     """Create an LLM provider from explicit args or environment variables.
 
     Environment variables (used as fallbacks):
-        BV_LLM_PROVIDER: "openai" or "anthropic" (default: "openai")
+        BV_LLM_PROVIDER: "openai", "anthropic", or "github" (default: auto-detect)
         BV_LLM_API_KEY: API key for the provider
         BV_LLM_MODEL: Model name
         BV_LLM_BASE_URL: Base URL (OpenAI-compatible providers only)
 
+    When no provider is specified and no API key is set, GitHub Models is
+    used automatically if the GitHub CLI (``gh``) is installed and authenticated.
+
     Raises:
         LLMError: If required configuration is missing.
     """
-    provider = provider or os.environ.get("BV_LLM_PROVIDER", "openai")
+    provider_name = provider or os.environ.get("BV_LLM_PROVIDER", "")
     api_key = api_key or os.environ.get("BV_LLM_API_KEY", "")
 
-    if not api_key:
-        raise LLMError(
-            "No API key provided. Set BV_LLM_API_KEY environment variable "
-            "or pass --api-key to the command."
-        )
-
-    if provider == "anthropic":
+    # Explicit provider selection
+    if provider_name == "github":
+        model = model or os.environ.get("BV_LLM_MODEL", "gpt-4o")
+        return GitHubModelsProvider(api_key=api_key or None, model=model)
+    elif provider_name == "anthropic":
+        if not api_key:
+            raise LLMError(
+                "No API key provided. Set BV_LLM_API_KEY environment variable "
+                "or pass --api-key to the command."
+            )
         model = model or os.environ.get("BV_LLM_MODEL", "claude-sonnet-4-20250514")
         return AnthropicProvider(api_key=api_key, model=model)
-    else:
+    elif provider_name == "openai":
+        if not api_key:
+            raise LLMError(
+                "No API key provided. Set BV_LLM_API_KEY environment variable "
+                "or pass --api-key to the command."
+            )
         model = model or os.environ.get("BV_LLM_MODEL", "gpt-4o")
         base_url = base_url or os.environ.get(
             "BV_LLM_BASE_URL", "https://api.openai.com/v1"
         )
         return OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
+
+    # Auto-detection: if API key provided, use OpenAI. Otherwise try GitHub.
+    if api_key:
+        model = model or os.environ.get("BV_LLM_MODEL", "gpt-4o")
+        base_url = base_url or os.environ.get(
+            "BV_LLM_BASE_URL", "https://api.openai.com/v1"
+        )
+        return OpenAIProvider(api_key=api_key, model=model, base_url=base_url)
+
+    # No API key — try GitHub Models (uses gh auth)
+    if GitHubModelsProvider.is_available():
+        model = model or os.environ.get("BV_LLM_MODEL", "gpt-4o")
+        return GitHubModelsProvider(model=model)
+
+    raise LLMError(
+        "No LLM provider configured. Either:\n"
+        "  1. Install GitHub CLI and run 'gh auth login' (easiest)\n"
+        "  2. Set BV_LLM_API_KEY environment variable\n"
+        "  3. Pass --api-key to the command"
+    )
