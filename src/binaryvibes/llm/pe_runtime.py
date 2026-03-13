@@ -302,4 +302,64 @@ __bv_hg_ret:
   ret
 
 __bv_ua: .asciz "BinaryVibes/1.0"
+
+__bv_open_url:
+  sub rsp, 0x48
+  mov r8, rcx
+  xor ecx, ecx
+  lea rdx, [rip+__bv_open_verb]
+  xor r9d, r9d
+  mov qword ptr [rsp+0x20], 0
+  mov qword ptr [rsp+0x28], 5
+  mov eax, 0x402128
+  mov rax, [rax]
+  call rax
+  add rsp, 0x48
+  ret
+
+__bv_write_file_helper:
+  push rbx
+  push rsi
+  push rdi
+  sub rsp, 0x50
+  mov rsi, rcx
+  mov rdi, rdx
+  mov rbx, r8
+  xor r9d, r9d
+  mov rdx, 0x40000000
+  mov r8, 0
+  mov qword ptr [rsp+0x20], 2
+  mov qword ptr [rsp+0x28], 0x80
+  mov qword ptr [rsp+0x30], 0
+  mov rcx, rsi
+  mov eax, 0x402020
+  mov rax, [rax]
+  call rax
+  cmp rax, -1
+  je __bv_wfh_fail
+  mov rsi, rax
+  mov rcx, rsi
+  mov rdx, rdi
+  mov r8, rbx
+  lea r9, [rsp+0x48]
+  mov qword ptr [rsp+0x20], 0
+  mov eax, 0x402010
+  mov rax, [rax]
+  call rax
+  mov rcx, rsi
+  mov eax, 0x402028
+  mov rax, [rax]
+  call rax
+  mov eax, 1
+  jmp __bv_wfh_ret
+__bv_wfh_fail:
+  xor eax, eax
+__bv_wfh_ret:
+  add rsp, 0x50
+  pop rdi
+  pop rsi
+  pop rbx
+  ret
+
+__bv_open_verb: .asciz "open"
 """

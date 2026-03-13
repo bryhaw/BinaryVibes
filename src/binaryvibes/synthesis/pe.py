@@ -65,6 +65,9 @@ _PE_IMPORTS: OrderedDict[str, list[str]] = OrderedDict([
         "InternetReadFile",
         "InternetCloseHandle",
     ]),
+    ("shell32.dll", [
+        "ShellExecuteA",
+    ]),
 ])
 
 # IAT virtual addresses exported for use by the prompt/codegen system.
