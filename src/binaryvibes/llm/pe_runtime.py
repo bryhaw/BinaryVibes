@@ -2,6 +2,12 @@
 
 These assembly routines are automatically appended to LLM-generated code
 so the LLM can call them without having to define them.
+
+IAT address reference (ImageBase 0x400000 + .idata RVA 0x2000):
+  ExitProcess      0x402000    GetStdHandle     0x402008
+  WriteFile        0x402010    ReadFile         0x402018
+  CreateFileA      0x402020    CloseHandle      0x402028
+  Sleep            0x402060    lstrlenA         0x4020A8
 """
 
 from __future__ import annotations
@@ -88,5 +94,90 @@ __bv_pn_done:
   pop rdi
   pop rsi
   pop rbx
+  ret
+
+__bv_get_stdout:
+  sub rsp, 0x28
+  mov ecx, -11
+  mov eax, 0x402008
+  mov rax, [rax]
+  call rax
+  add rsp, 0x28
+  ret
+
+__bv_write:
+  push rbx
+  push rsi
+  sub rsp, 0x48
+  mov rsi, rcx
+  mov rbx, rdx
+  mov ecx, -11
+  mov eax, 0x402008
+  mov rax, [rax]
+  call rax
+  mov rcx, rax
+  mov rdx, rsi
+  mov r8, rbx
+  lea r9, [rsp+0x40]
+  mov qword ptr [rsp+0x20], 0
+  mov eax, 0x402010
+  mov rax, [rax]
+  call rax
+  add rsp, 0x48
+  pop rsi
+  pop rbx
+  ret
+
+__bv_sleep:
+  push rbx
+  sub rsp, 0x20
+  mov eax, 0x402060
+  mov rax, [rax]
+  call rax
+  add rsp, 0x20
+  pop rbx
+  ret
+
+__bv_open_file_read:
+  push rbx
+  sub rsp, 0x40
+  mov r9, 0
+  mov qword ptr [rsp+0x20], 3
+  mov qword ptr [rsp+0x28], 0x80
+  mov qword ptr [rsp+0x30], 0
+  mov rdx, 0x80000000
+  mov r8, 1
+  mov eax, 0x402020
+  mov rax, [rax]
+  call rax
+  add rsp, 0x40
+  pop rbx
+  ret
+
+__bv_read_file:
+  push rbx
+  push rsi
+  sub rsp, 0x48
+  mov rbx, rcx
+  mov rsi, rdx
+  lea r9, [rsp+0x40]
+  mov qword ptr [rsp+0x20], 0
+  mov rcx, rbx
+  mov rdx, rsi
+  mov eax, 0x402018
+  mov rax, [rax]
+  call rax
+  mov eax, dword ptr [rsp+0x40]
+  add rsp, 0x48
+  pop rsi
+  pop rbx
+  ret
+
+__bv_close_handle:
+  sub rsp, 0x28
+  mov eax, 0x402028
+  mov rax, [rax]
+  call rax
+  add rsp, 0x28
   ret
 """
