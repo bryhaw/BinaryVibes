@@ -87,6 +87,21 @@ AVAILABLE WINDOWS API FUNCTIONS (kernel32.dll):
   lstrlenA(lpString) -> int                        IAT: 0x4020A8
   GetEnvironmentVariableA(name, buf, size) -> DWORD IAT: 0x4020B0
   GetTickCount64() -> ULONGLONG                    IAT: 0x4020B8
+  GetCurrentDirectoryA(nBufLen, lpBuf) -> DWORD    IAT: 0x4020C0
+  GetTempPathA(nBufLen, lpBuf) -> DWORD            IAT: 0x4020C8
+  DeleteFileA(lpFileName) -> BOOL                  IAT: 0x4020D0
+  CopyFileA(src, dst, failIfExists) -> BOOL        IAT: 0x4020D8
+  CreateDirectoryA(pathName, secAttrs) -> BOOL      IAT: 0x4020E0
+
+  --- user32.dll ---
+  MessageBoxA(hWnd, text, caption, type) -> int  IAT: 0x4020F0
+    Types: MB_OK=0, MB_OKCANCEL=1, MB_YESNO=4
+
+  --- wininet.dll ---
+  InternetOpenA(agent, accessType, proxy, bypass, flags) IAT: 0x402100
+  InternetOpenUrlA(hInternet, url, headers, hdrLen, flags, ctx) IAT: 0x402108
+  InternetReadFile(hFile, buf, bytesToRead, bytesRead) IAT: 0x402110
+  InternetCloseHandle(hInternet) IAT: 0x402118
 
 CONSTANTS:
   STD_INPUT_HANDLE  = -10 (0xFFFFFFFFFFFFFFF6)
@@ -105,6 +120,9 @@ PRE-DEFINED UTILITY FUNCTIONS — automatically available, just call them:
   __bv_open_file_read(rcx=filename_ptr) -> rax  — open file (returns -1 on failure)
   __bv_read_file(rcx=handle, rdx=buffer, r8=max_bytes) -> rax=bytes_read
   __bv_close_handle(rcx=handle)   — close file/handle
+  __bv_msgbox(rcx=text, rdx=title)  — show a MessageBox (MB_OK)
+  __bv_http_get(rcx=url, rdx=buffer, r8=max_size) -> rax=bytes_read
+    Fetches URL via HTTP GET into buffer, null-terminates, returns bytes read (0=fail)
 
   IMPORTANT: These helpers save and restore registers properly.
   Use callee-saved registers (rbx, r12-r15) for values that must survive across calls.
@@ -340,6 +358,57 @@ FEW_SHOT_EXAMPLES: dict[tuple[Arch, BinaryFormat], list[dict[str, str]]] = {
                     'errmsg: .asciz "Error: could not open file"'
                 ),
                 "description": "Opens data.txt, reads 256 bytes, prints contents, handles errors",
+            }),
+        },
+        {
+            "user": "pop up a message box that says Hello",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": (
+                    "sub rsp, 0x28\n"
+                    "lea rcx, [rip+msg]\n"
+                    "lea rdx, [rip+title]\n"
+                    "call __bv_msgbox\n"
+                    "xor ecx, ecx\n"
+                    "mov eax, 0x402000\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    'msg: .asciz "Hello from BinaryVibes!"\n'
+                    'title: .asciz "Greeting"'
+                ),
+                "description": "Shows a MessageBox with Hello greeting, then exits",
+            }),
+        },
+        {
+            "user": "fetch http://example.com and print the response",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": (
+                    "sub rsp, 0x228\n"
+                    "lea rcx, [rip+url]\n"
+                    "lea rdx, [rsp+0x20]\n"
+                    "mov r8, 512\n"
+                    "call __bv_http_get\n"
+                    "test rax, rax\n"
+                    "jz fail\n"
+                    "lea rcx, [rsp+0x20]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "xor ecx, ecx\n"
+                    "jmp done\n"
+                    "fail:\n"
+                    "lea rcx, [rip+errmsg]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "mov ecx, 1\n"
+                    "done:\n"
+                    "mov eax, 0x402000\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    'url: .asciz "http://example.com"\n'
+                    'errmsg: .asciz "Error: HTTP request failed"'
+                ),
+                "description": "Fetches example.com via HTTP and prints the response",
             }),
         },
     ],
