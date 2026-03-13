@@ -1,13 +1,14 @@
 """PE (Windows) binary generation.
 
 Generates minimal PE64 (x86_64) Windows executables that import
-commonly-used Windows API functions from kernel32.dll via an
+commonly-used Windows API functions from multiple DLLs via an
 Import Address Table (IAT) at known virtual addresses.
 """
 
 from __future__ import annotations
 
 import struct
+from collections import OrderedDict
 
 # ---------------------------------------------------------------------------
 # PE constants
@@ -20,41 +21,62 @@ PE_IDATA_RVA = 0x2000
 
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 
-# Functions imported from kernel32.dll.
-_KERNEL32_FUNCTIONS = [
-    "ExitProcess",
-    "GetStdHandle",
-    "WriteFile",
-    "ReadFile",
-    "CreateFileA",
-    "CloseHandle",
-    "GetFileSize",
-    "GetComputerNameA",
-    "GetLocalTime",
-    "GlobalMemoryStatusEx",
-    "GetCurrentProcessId",
-    "GetCommandLineA",
-    "Sleep",
-    "GetProcessHeap",
-    "HeapAlloc",
-    "HeapFree",
-    "FindFirstFileA",
-    "FindNextFileA",
-    "FindClose",
-    "SetConsoleTitleA",
-    "GetLastError",
-    "lstrlenA",
-    "GetEnvironmentVariableA",
-    "GetTickCount64",
-]
+# Functions imported from Windows DLLs.
+# Each DLL's IAT entries are contiguous, followed by an 8-byte null
+# terminator, then the next DLL's entries.
+_PE_IMPORTS: OrderedDict[str, list[str]] = OrderedDict([
+    ("kernel32.dll", [
+        "ExitProcess",
+        "GetStdHandle",
+        "WriteFile",
+        "ReadFile",
+        "CreateFileA",
+        "CloseHandle",
+        "GetFileSize",
+        "GetComputerNameA",
+        "GetLocalTime",
+        "GlobalMemoryStatusEx",
+        "GetCurrentProcessId",
+        "GetCommandLineA",
+        "Sleep",
+        "GetProcessHeap",
+        "HeapAlloc",
+        "HeapFree",
+        "FindFirstFileA",
+        "FindNextFileA",
+        "FindClose",
+        "SetConsoleTitleA",
+        "GetLastError",
+        "lstrlenA",
+        "GetEnvironmentVariableA",
+        "GetTickCount64",
+        "GetCurrentDirectoryA",
+        "GetTempPathA",
+        "DeleteFileA",
+        "CopyFileA",
+        "CreateDirectoryA",
+    ]),
+    ("user32.dll", [
+        "MessageBoxA",
+    ]),
+    ("wininet.dll", [
+        "InternetOpenA",
+        "InternetOpenUrlA",
+        "InternetReadFile",
+        "InternetCloseHandle",
+    ]),
+])
 
 # IAT virtual addresses exported for use by the prompt/codegen system.
-# The IAT lives at the very start of .idata (RVA 0x2000), so each 8-byte
-# entry maps to ImageBase + 0x2000 + index*8.
-PE_IAT_EXPORTS: dict[str, int] = {
-    name: PE_IMAGE_BASE + PE_IDATA_RVA + i * 8
-    for i, name in enumerate(_KERNEL32_FUNCTIONS)
-}
+# The IAT lives at the very start of .idata (RVA 0x2000).  Each DLL's
+# function entries are contiguous, separated by 8-byte null terminators.
+PE_IAT_EXPORTS: dict[str, int] = {}
+_iat_offset = 0
+for _dll_name, _functions in _PE_IMPORTS.items():
+    for _func in _functions:
+        PE_IAT_EXPORTS[_func] = PE_IMAGE_BASE + PE_IDATA_RVA + _iat_offset
+        _iat_offset += 8
+    _iat_offset += 8  # null terminator between DLLs
 
 
 # ---------------------------------------------------------------------------
@@ -67,63 +89,87 @@ def _align(value: int, alignment: int) -> int:
 
 
 def _build_idata_section() -> tuple[bytes, int, int, int]:
-    """Build the .idata section with import tables for kernel32.dll.
+    """Build the .idata section with import tables for all DLLs.
 
     Internal layout (offsets relative to section start, i.e. RVA 0x2000)::
 
-        [IAT]               (num_funcs + 1) * 8   Import Address Table
-        [ILT]               (num_funcs + 1) * 8   Import Lookup Table
-        [IDT]               40                     Import Directory Table
+        [All IATs]          contiguous: dll1 IAT + null | dll2 IAT + null | …
+        [All ILTs]          contiguous: dll1 ILT + null | dll2 ILT + null | …
+        [IDT]               (num_dlls + 1) * 20   Import Directory Table
         [Hint/Name entries] variable               2-byte hint + ASCII name
-        [DLL name]          variable               "kernel32.dll\\0"
+        [DLL name strings]  variable
 
     Returns:
         ``(section_bytes, iat_offset, ilt_offset, idt_offset)``
     """
-    num_funcs = len(_KERNEL32_FUNCTIONS)
-    table_size = (num_funcs + 1) * 8  # entries + null terminator
+    # Total IAT/ILT entry count (functions + one null terminator per DLL)
+    total_iat_entries = sum(len(funcs) + 1 for funcs in _PE_IMPORTS.values())
+    total_table_size = total_iat_entries * 8
 
     iat_offset = 0
-    ilt_offset = iat_offset + table_size
-    idt_offset = ilt_offset + table_size
-    hint_names_start = idt_offset + 40  # IDT = 1 entry (20) + null (20)
+    ilt_offset = total_table_size
+    num_dlls = len(_PE_IMPORTS)
+    idt_offset = ilt_offset + total_table_size
+    idt_size = (num_dlls + 1) * 20
+    hint_names_start = idt_offset + idt_size
 
-    # -- Hint/Name entries --------------------------------------------------
+    # -- Hint/Name entries for ALL functions --------------------------------
     hint_names = bytearray()
-    hint_name_rvas: list[int] = []
-    for func in _KERNEL32_FUNCTIONS:
-        rva = PE_IDATA_RVA + hint_names_start + len(hint_names)
-        hint_name_rvas.append(rva)
-        entry = struct.pack("<H", 0) + func.encode("ascii") + b"\x00"
-        if len(entry) % 2:
-            entry += b"\x00"  # pad to even boundary
-        hint_names += entry
+    dll_hint_rvas: dict[str, list[int]] = {}
+    for dll_name, functions in _PE_IMPORTS.items():
+        rvas: list[int] = []
+        for func in functions:
+            rva = PE_IDATA_RVA + hint_names_start + len(hint_names)
+            rvas.append(rva)
+            entry = struct.pack("<H", 0) + func.encode("ascii") + b"\x00"
+            if len(entry) % 2:
+                entry += b"\x00"  # pad to even boundary
+            hint_names += entry
+        dll_hint_rvas[dll_name] = rvas
 
-    # -- DLL name -----------------------------------------------------------
-    dll_name_rva = PE_IDATA_RVA + hint_names_start + len(hint_names)
-    dll_name = b"kernel32.dll\x00"
+    # -- DLL name strings ---------------------------------------------------
+    dll_name_rvas: dict[str, int] = {}
+    dll_names_data = bytearray()
+    for dll_name in _PE_IMPORTS:
+        rva = PE_IDATA_RVA + hint_names_start + len(hint_names) + len(dll_names_data)
+        dll_name_rvas[dll_name] = rva
+        dll_names_data += dll_name.encode("ascii") + b"\x00"
 
     # -- IAT & ILT (identical at link time; loader patches IAT) -------------
-    table = bytearray()
-    for rva in hint_name_rvas:
-        table += struct.pack("<Q", rva)
-    table += struct.pack("<Q", 0)  # null terminator
+    iat = bytearray()
+    ilt = bytearray()
+    dll_iat_offsets: dict[str, int] = {}
+    dll_ilt_offsets: dict[str, int] = {}
 
-    iat = bytes(table)
-    ilt = bytes(table)
+    current_offset = 0
+    for dll_name, functions in _PE_IMPORTS.items():
+        dll_iat_offsets[dll_name] = current_offset
+        dll_ilt_offsets[dll_name] = total_table_size + current_offset
+
+        for rva in dll_hint_rvas[dll_name]:
+            entry = struct.pack("<Q", rva)
+            iat += entry
+            ilt += entry
+            current_offset += 8
+        # Null terminator for this DLL
+        iat += struct.pack("<Q", 0)
+        ilt += struct.pack("<Q", 0)
+        current_offset += 8
 
     # -- Import Directory Table (IDT) ---------------------------------------
-    idt = struct.pack(
-        "<IIIII",
-        PE_IDATA_RVA + ilt_offset,   # OriginalFirstThunk → ILT
-        0,                            # TimeDateStamp
-        0,                            # ForwarderChain
-        dll_name_rva,                 # Name → DLL name string
-        PE_IDATA_RVA + iat_offset,   # FirstThunk → IAT
-    )
+    idt = bytearray()
+    for dll_name in _PE_IMPORTS:
+        idt += struct.pack(
+            "<IIIII",
+            PE_IDATA_RVA + dll_ilt_offsets[dll_name],  # OriginalFirstThunk
+            0,                                           # TimeDateStamp
+            0,                                           # ForwarderChain
+            dll_name_rvas[dll_name],                     # Name
+            PE_IDATA_RVA + dll_iat_offsets[dll_name],   # FirstThunk
+        )
     idt += b"\x00" * 20  # null terminator entry
 
-    section = iat + ilt + idt + bytes(hint_names) + dll_name
+    section = bytes(iat) + bytes(ilt) + bytes(idt) + bytes(hint_names) + bytes(dll_names_data)
     return section, iat_offset, ilt_offset, idt_offset
 
 
@@ -134,10 +180,10 @@ def _build_idata_section() -> tuple[bytes, int, int, int]:
 def build_pe64(code: bytes, data: bytes = b"") -> bytes:
     """Generate a minimal PE64 (x86_64) Windows executable.
 
-    The binary imports commonly-used Windows API functions from
-    kernel32.dll.  IAT entries reside at fixed virtual addresses so that
-    generated machine code can reference them directly (see
-    ``PE_IAT_EXPORTS`` for the full mapping).
+    The binary imports commonly-used Windows API functions from multiple
+    DLLs (see ``_PE_IMPORTS``).  IAT entries reside at fixed virtual
+    addresses so that generated machine code can reference them directly
+    (see ``PE_IAT_EXPORTS`` for the full mapping).
 
     Args:
         code: Machine code placed at the start of the ``.text`` section.
@@ -151,8 +197,10 @@ def build_pe64(code: bytes, data: bytes = b"") -> bytes:
     # -- .idata section -----------------------------------------------------
     idata_raw, iat_off, _ilt_off, idt_off = _build_idata_section()
 
-    num_funcs = len(_KERNEL32_FUNCTIONS)
-    iat_size = (num_funcs + 1) * 8
+    total_iat_entries = sum(len(funcs) + 1 for funcs in _PE_IMPORTS.values())
+    iat_size = total_iat_entries * 8
+    num_dlls = len(_PE_IMPORTS)
+    idt_size = (num_dlls + 1) * 20
 
     # -- sizes (file layout) ------------------------------------------------
     headers_size = PE_FILE_ALIGNMENT  # 0x200
@@ -230,7 +278,7 @@ def build_pe64(code: bytes, data: bytes = b"") -> bytes:
     data_dirs = bytearray(128)
     # [1] Import Table → IDT
     struct.pack_into("<II", data_dirs, 1 * 8,
-                     PE_IDATA_RVA + idt_off, 40)
+                     PE_IDATA_RVA + idt_off, idt_size)
     # [12] IAT
     struct.pack_into("<II", data_dirs, 12 * 8,
                      PE_IDATA_RVA + iat_off, iat_size)

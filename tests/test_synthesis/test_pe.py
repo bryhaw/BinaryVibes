@@ -12,6 +12,7 @@ from binaryvibes.synthesis.pe import (
     PE_IAT_EXPORTS,
     PE_IDATA_RVA,
     PE_IMAGE_BASE,
+    _PE_IMPORTS,
     _align,
     _build_idata_section,
     build_pe64,
@@ -94,7 +95,7 @@ class TestBuildPE64Basic:
 
     def test_minimum_file_size(self) -> None:
         pe = build_pe64(b"\xc3")  # single RET
-        # headers (0x200) + .text (0x200) + .idata (0x200) = 0x600
+        # headers (0x200) + .text (0x200) + .idata (>= 0x200)
         assert len(pe) >= 0x600
 
 
@@ -141,6 +142,16 @@ class TestLIEFParsing:
         import_libs = [lib.name.lower() for lib in parsed.imports]
         assert "kernel32.dll" in import_libs
 
+    def test_lief_imports_user32(self) -> None:
+        parsed = self._parse()
+        import_libs = [lib.name.lower() for lib in parsed.imports]
+        assert "user32.dll" in import_libs
+
+    def test_lief_imports_wininet(self) -> None:
+        parsed = self._parse()
+        import_libs = [lib.name.lower() for lib in parsed.imports]
+        assert "wininet.dll" in import_libs
+
     def test_lief_imported_functions(self) -> None:
         parsed = self._parse()
         funcs: list[str] = []
@@ -151,6 +162,8 @@ class TestLIEFParsing:
         assert "ExitProcess" in funcs
         assert "GetStdHandle" in funcs
         assert "WriteFile" in funcs
+        assert "MessageBoxA" in funcs
+        assert "InternetOpenA" in funcs
 
     def test_lief_console_subsystem(self) -> None:
         parsed = self._parse()
@@ -180,17 +193,23 @@ class TestImportTable:
 
     def test_iat_contains_hint_name_rvas(self) -> None:
         section, _iat_off, _ilt_off, _idt_off = _build_idata_section()
-        num_funcs = len(PE_IAT_EXPORTS)
-        # All entries should be non-zero RVAs; last should be null
-        for i in range(num_funcs):
-            entry = struct.unpack_from("<Q", section, i * 8)[0]
-            assert entry != 0, f"IAT[{i}] should be non-zero"
-        null_term = struct.unpack_from("<Q", section, num_funcs * 8)[0]
-        assert null_term == 0
+        # Walk the IAT per-DLL: each DLL's entries are non-zero,
+        # followed by a null terminator.
+        offset = 0
+        for dll_name, functions in _PE_IMPORTS.items():
+            for i, func in enumerate(functions):
+                entry = struct.unpack_from("<Q", section, offset)[0]
+                assert entry != 0, f"IAT entry for {func} ({dll_name}) should be non-zero"
+                offset += 8
+            # Null terminator for this DLL
+            null_term = struct.unpack_from("<Q", section, offset)[0]
+            assert null_term == 0, f"IAT null terminator for {dll_name} missing"
+            offset += 8
 
     def test_dll_name_in_section(self) -> None:
         section, *_ = _build_idata_section()
-        assert b"kernel32.dll\x00" in section
+        for dll_name in _PE_IMPORTS:
+            assert dll_name.encode("ascii") + b"\x00" in section
 
     def test_function_names_in_section(self) -> None:
         section, *_ = _build_idata_section()
@@ -217,6 +236,29 @@ class TestExportedConstants:
         assert PE_IAT_EXPORTS["ExitProcess"] == PE_IMAGE_BASE + PE_IDATA_RVA
         assert PE_IAT_EXPORTS["GetStdHandle"] == PE_IMAGE_BASE + PE_IDATA_RVA + 8
         assert PE_IAT_EXPORTS["WriteFile"] == PE_IMAGE_BASE + PE_IDATA_RVA + 16
+
+    def test_iat_exports_new_kernel32_functions(self) -> None:
+        """New kernel32 functions are contiguous after the original 24."""
+        # Index 24 in kernel32.dll = GetCurrentDirectoryA
+        assert PE_IAT_EXPORTS["GetCurrentDirectoryA"] == PE_IMAGE_BASE + PE_IDATA_RVA + 24 * 8
+
+    def test_iat_exports_messagebox(self) -> None:
+        """MessageBoxA is after kernel32 IAT + null terminator."""
+        k32_count = len(_PE_IMPORTS["kernel32.dll"])
+        expected = PE_IMAGE_BASE + PE_IDATA_RVA + (k32_count + 1) * 8
+        assert PE_IAT_EXPORTS["MessageBoxA"] == expected
+
+    def test_iat_exports_internetopen(self) -> None:
+        """InternetOpenA is after user32 IAT + null terminator."""
+        k32_count = len(_PE_IMPORTS["kernel32.dll"])
+        u32_count = len(_PE_IMPORTS["user32.dll"])
+        expected = PE_IMAGE_BASE + PE_IDATA_RVA + (k32_count + 1 + u32_count + 1) * 8
+        assert PE_IAT_EXPORTS["InternetOpenA"] == expected
+
+    def test_all_iat_in_idata_range(self) -> None:
+        """All IAT addresses should be in the 0x402xxx range."""
+        for name, addr in PE_IAT_EXPORTS.items():
+            assert 0x402000 <= addr < 0x403000, f"{name}: 0x{addr:X}"
 
     def test_code_rva(self) -> None:
         assert PE_CODE_RVA == 0x1000
