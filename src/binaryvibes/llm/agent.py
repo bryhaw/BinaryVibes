@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat, detect_native_format
 from binaryvibes.core.binary import BinaryFile
 from binaryvibes.llm.prompts import (
     AssemblyPlan,
@@ -35,6 +35,7 @@ class BuildResult:
     binary: BinaryFile
     assembly: str
     arch: Arch
+    fmt: BinaryFormat
     description: str
     verified: bool
     emulation_result: EmulationResult | None = None
@@ -42,13 +43,21 @@ class BuildResult:
     retries_used: int = 0
 
 
-def _entry_point(arch: Arch) -> int:
-    """Compute ELF entry point address for the given architecture."""
-    if arch in (Arch.X86_64, Arch.ARM64):
-        return DEFAULT_BASE_ADDR + ELF64_EHDR_SIZE + ELF64_PHDR_SIZE
-    elif arch == Arch.X86_32:
-        return DEFAULT_BASE_ADDR + ELF32_EHDR_SIZE + ELF32_PHDR_SIZE
-    else:
+def _entry_point(arch: Arch, fmt: BinaryFormat = BinaryFormat.ELF) -> int:
+    """Compute entry point address for the given architecture and format."""
+    if fmt == BinaryFormat.PE:
+        from binaryvibes.synthesis.pe import PE_CODE_RVA, PE_IMAGE_BASE
+
+        return PE_IMAGE_BASE + PE_CODE_RVA
+    elif fmt == BinaryFormat.MACHO:
+        from binaryvibes.synthesis.macho import MACHO_CODE_VA
+
+        return MACHO_CODE_VA.get(arch, 0x100001000)
+    else:  # ELF
+        if arch in (Arch.X86_64, Arch.ARM64):
+            return DEFAULT_BASE_ADDR + ELF64_EHDR_SIZE + ELF64_PHDR_SIZE
+        elif arch == Arch.X86_32:
+            return DEFAULT_BASE_ADDR + ELF32_EHDR_SIZE + ELF32_PHDR_SIZE
         return DEFAULT_BASE_ADDR
 
 
@@ -68,11 +77,13 @@ class BuildAgent:
         self,
         provider: LLMProvider,
         arch: Arch = Arch.X86_64,
+        fmt: BinaryFormat | None = None,
         max_retries: int = 3,
         verify: bool = True,
     ):
         self.provider = provider
         self.arch = arch
+        self.fmt = fmt or detect_native_format()
         self.max_retries = max_retries
         self.verify = verify
 
@@ -88,7 +99,7 @@ class BuildAgent:
         Raises:
             LLMError: If the LLM fails to produce valid assembly after retries.
         """
-        messages = build_messages(description, self.arch)
+        messages = build_messages(description, self.arch, self.fmt)
         plan: AssemblyPlan | None = None
         last_error = ""
         retries_used = 0
@@ -122,7 +133,7 @@ class BuildAgent:
 
             # Try to assemble
             try:
-                entry = _entry_point(plan.arch)
+                entry = _entry_point(plan.arch, self.fmt)
                 assembler = Assembler(plan.arch)
                 code = assembler.assemble(plan.assembly, base_addr=entry)
             except Exception as e:
@@ -133,9 +144,9 @@ class BuildAgent:
                 retries_used += 1
                 continue
 
-            # Build the ELF binary
+            # Build the binary
             builder = BinaryBuilder()
-            binary = builder.set_arch(plan.arch).add_code(code).build()
+            binary = builder.set_arch(plan.arch).set_format(self.fmt).add_code(code).build()
 
             # Optionally verify via emulation
             emulation_result = None
@@ -154,6 +165,7 @@ class BuildAgent:
                 binary=binary,
                 assembly=plan.assembly,
                 arch=plan.arch,
+                fmt=self.fmt,
                 description=plan.description,
                 verified=verified,
                 emulation_result=emulation_result,

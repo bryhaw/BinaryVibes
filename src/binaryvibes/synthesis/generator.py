@@ -1,11 +1,11 @@
-"""Whole-binary synthesis — generate minimal ELF binaries from scratch."""
+"""Whole-binary synthesis — generate minimal binaries from scratch."""
 
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat, detect_native_format
 from binaryvibes.core.binary import BinaryFile
 
 # ELF constants
@@ -39,7 +39,8 @@ DEFAULT_BASE_ADDR = 0x400000
 class BinaryBuilder:
     """Fluent builder for constructing minimal binaries from scratch.
 
-    Supports generating ELF64 (x86_64, AArch64) and ELF32 (x86_32) executables
+    Supports generating ELF64 (x86_64, AArch64), ELF32 (x86_32),
+    PE64 (x86_64), and Mach-O 64 (x86_64, ARM64) executables
     containing user-provided machine code and data.
 
     Example::
@@ -47,12 +48,14 @@ class BinaryBuilder:
         binary = (
             BinaryBuilder()
             .set_arch(Arch.X86_64)
+            .set_format(BinaryFormat.ELF)
             .add_code(b"\\xb8\\x3c\\x00\\x00\\x00\\xbf\\x2a\\x00\\x00\\x00\\x0f\\x05")
             .build()
         )
     """
 
     _arch: Arch = Arch.X86_64
+    _format: BinaryFormat | None = None  # None means auto-detect
     _code: bytes = b""
     _data: bytes = b""
     _base_addr: int = DEFAULT_BASE_ADDR
@@ -60,6 +63,11 @@ class BinaryBuilder:
     def set_arch(self, arch: Arch) -> BinaryBuilder:
         """Set target architecture."""
         self._arch = arch
+        return self
+
+    def set_format(self, fmt: BinaryFormat) -> BinaryBuilder:
+        """Set output binary format (ELF, PE, Mach-O)."""
+        self._format = fmt
         return self
 
     def set_base_address(self, addr: int) -> BinaryBuilder:
@@ -79,15 +87,38 @@ class BinaryBuilder:
 
     def build(self) -> BinaryFile:
         """Generate the binary and return as BinaryFile."""
-        if self._arch == Arch.X86_64:
-            raw = self._build_elf64(EM_X86_64)
-        elif self._arch == Arch.X86_32:
-            raw = self._build_elf32()
-        elif self._arch == Arch.ARM64:
-            raw = self._build_elf64(EM_AARCH64)
+        fmt = self._format or BinaryFormat.ELF
+
+        if fmt == BinaryFormat.PE:
+            from binaryvibes.synthesis.pe import build_pe64
+
+            if self._arch in (Arch.X86_64,):
+                raw = build_pe64(self._code, self._data)
+            else:
+                msg = f"PE generation not supported for {self._arch.value}"
+                raise NotImplementedError(msg)
+        elif fmt == BinaryFormat.MACHO:
+            from binaryvibes.synthesis.macho import build_macho64
+
+            if self._arch in (Arch.X86_64, Arch.ARM64):
+                raw = build_macho64(self._code, self._data, self._arch)
+            else:
+                msg = f"Mach-O generation not supported for {self._arch.value}"
+                raise NotImplementedError(msg)
+        elif fmt == BinaryFormat.ELF:
+            if self._arch == Arch.X86_64:
+                raw = self._build_elf64(EM_X86_64)
+            elif self._arch == Arch.X86_32:
+                raw = self._build_elf32()
+            elif self._arch == Arch.ARM64:
+                raw = self._build_elf64(EM_AARCH64)
+            else:
+                msg = f"ELF generation not supported for {self._arch.value}"
+                raise NotImplementedError(msg)
         else:
-            msg = f"Binary generation not supported for {self._arch.value}"
+            msg = f"Unknown format: {fmt}"
             raise NotImplementedError(msg)
+
         return BinaryFile.from_bytes(raw, name=f"generated_{self._arch.value}")
 
     def _build_elf64(self, machine: int) -> bytes:

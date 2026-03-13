@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat
 
 
 @dataclass(frozen=True)
@@ -18,48 +18,106 @@ class AssemblyPlan:
     description: str
 
 
-ARCH_CONTEXT = {
-    Arch.X86_64: """Target: x86_64 (64-bit Intel/AMD, Linux)
+ARCH_CONTEXT: dict[tuple[Arch, BinaryFormat], str] = {
+    # ── Linux ELF ──
+    (Arch.X86_64, BinaryFormat.ELF): """Target: x86_64 (64-bit Intel/AMD, Linux)
 Registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
 Calling convention: System V AMD64 — args in rdi, rsi, rdx, rcx, r8, r9; return in rax
 Syscalls: syscall instruction, number in rax, args in rdi, rsi, rdx, r10, r8, r9
 Key syscalls: exit=60 (rdi=code), write=1 (rdi=fd, rsi=buf, rdx=len), read=0
 Address size: 64-bit, use RIP-relative addressing when possible
 Stack: grows downward, 16-byte aligned before call""",
-    Arch.X86_32: """Target: x86_32 (32-bit Intel/AMD, Linux)
+
+    (Arch.X86_32, BinaryFormat.ELF): """Target: x86_32 (32-bit Intel/AMD, Linux)
 Registers: eax, ebx, ecx, edx, esi, edi, ebp, esp
 Calling convention: cdecl — args on stack right-to-left; return in eax
 Syscalls: int 0x80, number in eax, args in ebx, ecx, edx, esi, edi
 Key syscalls: exit=1 (ebx=code), write=4 (ebx=fd, ecx=buf, edx=len), read=3
 Address size: 32-bit""",
-    Arch.ARM64: """Target: ARM64 (AArch64, Linux)
+
+    (Arch.ARM64, BinaryFormat.ELF): """Target: ARM64 (AArch64, Linux)
 Registers: x0-x30, sp, pc, xzr (zero register)
 Calling convention: args in x0-x7; return in x0
 Syscalls: svc #0, number in x8, args in x0-x5
 Key syscalls: exit=93 (x0=code), write=64 (x0=fd, x1=buf, x2=len), read=63
 Address size: 64-bit, fixed 4-byte instruction width""",
-    Arch.ARM32: """Target: ARM32 (ARM, Linux)
+
+    (Arch.ARM32, BinaryFormat.ELF): """Target: ARM32 (ARM, Linux)
 Registers: r0-r12, sp (r13), lr (r14), pc (r15)
 Calling convention: args in r0-r3; return in r0
 Syscalls: svc #0, number in r7, args in r0-r5
 Key syscalls: exit=1 (r0=code), write=4 (r0=fd, r1=buf, r2=len), read=3
 Address size: 32-bit""",
+
+    # ── Windows PE ──
+    (Arch.X86_64, BinaryFormat.PE): """Target: x86_64 (64-bit Intel/AMD, Windows)
+Registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
+Calling convention: Microsoft x64 — args in rcx, rdx, r8, r9; return in rax
+Shadow space: MUST reserve 32 bytes (sub rsp, 0x28) before any call
+API functions are called via Import Address Table (IAT) at fixed addresses:
+  ExitProcess:  load from [0x402000] then call — void ExitProcess(UINT uExitCode)
+  GetStdHandle: load from [0x402008] then call — HANDLE GetStdHandle(DWORD nStdHandle)
+  WriteFile:    load from [0x402010] then call — BOOL WriteFile(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED)
+To call a function: mov rax, qword ptr [IAT_address]; call rax
+Constants: STD_OUTPUT_HANDLE = -11 (0xFFFFFFFFFFFFFFF5)
+IMPORTANT: Always call ExitProcess to terminate. Never use syscall on Windows.""",
+
+    (Arch.X86_32, BinaryFormat.PE): """Target: x86_32 (32-bit Intel/AMD, Windows)
+Registers: eax, ebx, ecx, edx, esi, edi, ebp, esp
+Calling convention: stdcall — args pushed right-to-left on stack; callee cleans stack
+API functions via IAT: push args right-to-left, then call [IAT_address]
+  ExitProcess at [0x402000]: push exit_code; call [0x402000]
+  GetStdHandle at [0x402004]: push -11; call [0x402004]
+  WriteFile at [0x402008]: push 5 args right-to-left; call [0x402008]
+IMPORTANT: Always call ExitProcess to terminate.""",
+
+    # ── macOS Mach-O ──
+    (Arch.X86_64, BinaryFormat.MACHO): """Target: x86_64 (64-bit Intel/AMD, macOS)
+Registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
+Calling convention: System V AMD64 — args in rdi, rsi, rdx, rcx, r8, r9; return in rax
+Syscalls: syscall instruction, number in rax = 0x2000000 | unix_number
+  args in rdi, rsi, rdx, r10, r8, r9
+Key syscalls: exit=0x2000001 (rdi=code), write=0x2000004 (rdi=fd, rsi=buf, rdx=len)
+Address size: 64-bit, use RIP-relative addressing when possible
+Stack: grows downward, 16-byte aligned before call""",
+
+    (Arch.ARM64, BinaryFormat.MACHO): """Target: ARM64 (AArch64, macOS/Apple Silicon)
+Registers: x0-x30, sp, pc, xzr (zero register)
+Calling convention: args in x0-x7; return in x0
+Syscalls: svc #0x80, number in x16, args in x0-x5
+Key syscalls: exit=1 (x0=code), write=4 (x0=fd, x1=buf, x2=len)
+Address size: 64-bit, fixed 4-byte instruction width""",
 }
 
 
+OS_INFO: dict[BinaryFormat, dict[str, str]] = {
+    BinaryFormat.ELF: {"os_name": "Linux", "format_name": "ELF"},
+    BinaryFormat.PE: {"os_name": "Windows", "format_name": "PE"},
+    BinaryFormat.MACHO: {"os_name": "macOS", "format_name": "Mach-O"},
+}
+
+EXIT_INSTRUCTIONS: dict[tuple[Arch, BinaryFormat], str] = {
+    (Arch.X86_64, BinaryFormat.ELF): "call exit syscall (mov rax,60; mov rdi,code; syscall)",
+    (Arch.X86_64, BinaryFormat.PE): "call ExitProcess via IAT (mov ecx,code; sub rsp,0x28; mov rax,[0x402000]; call rax)",
+    (Arch.X86_64, BinaryFormat.MACHO): "call exit syscall (mov rax,0x2000001; mov rdi,code; syscall)",
+    (Arch.X86_32, BinaryFormat.ELF): "call exit via int 0x80 (mov eax,1; mov ebx,code; int 0x80)",
+    (Arch.X86_32, BinaryFormat.PE): "call ExitProcess via IAT (push code; call [0x402000])",
+    (Arch.ARM64, BinaryFormat.ELF): "call exit syscall (mov x0,code; mov x8,#93; svc #0)",
+    (Arch.ARM64, BinaryFormat.MACHO): "call exit syscall (mov x0,code; mov x16,#1; svc #0x80)",
+    (Arch.ARM32, BinaryFormat.ELF): "call exit syscall (mov r0,code; mov r7,#1; svc #0)",
+}
+
 SYSTEM_PROMPT = """You are an expert assembly language programmer working with the BinaryVibes \
-framework. Your job is to write assembly code that will be assembled into a standalone Linux ELF \
-binary.
+framework. Your job is to write assembly code that will be assembled into a standalone \
+{os_name} {format_name} binary.
 
 CRITICAL RULES:
-1. Write ONLY pure assembly instructions — no directives (.section, .global, .text, .data), \
-no labels, no comments.
-2. The code will be placed at the entry point of a minimal ELF binary. Execution starts at the \
-first instruction.
-3. The program MUST terminate by calling the exit syscall. Never let execution fall off the end.
+1. Write ONLY pure assembly instructions — no directives, no labels, no comments.
+2. The code will be placed at the entry point of a minimal binary. Execution starts at the first instruction.
+3. The program MUST terminate properly: {exit_instruction}
 4. Use ONLY instructions — no pseudo-ops, no macros, no preprocessor directives.
 5. For string data, embed bytes directly using techniques like pushing values onto the stack.
-6. Keep it simple and correct. Prefer straightforward implementations over clever tricks.
+6. Keep it simple and correct. Prefer straightforward implementations.
 7. Each instruction goes on its own line.
 
 {arch_context}
@@ -74,8 +132,9 @@ RESPONSE FORMAT — you MUST respond with ONLY a JSON object (no markdown fences
 The "assembly" field contains newline-separated assembly instructions. Nothing else."""
 
 
-FEW_SHOT_EXAMPLES: dict[Arch, list[dict[str, str]]] = {
-    Arch.X86_64: [
+FEW_SHOT_EXAMPLES: dict[tuple[Arch, BinaryFormat], list[dict[str, str]]] = {
+    # ── Linux ELF ──
+    (Arch.X86_64, BinaryFormat.ELF): [
         {
             "user": "a program that exits with code 42",
             "assistant": json.dumps({
@@ -96,7 +155,7 @@ FEW_SHOT_EXAMPLES: dict[Arch, list[dict[str, str]]] = {
             }),
         },
     ],
-    Arch.X86_32: [
+    (Arch.X86_32, BinaryFormat.ELF): [
         {
             "user": "a program that exits with code 42",
             "assistant": json.dumps({
@@ -106,7 +165,7 @@ FEW_SHOT_EXAMPLES: dict[Arch, list[dict[str, str]]] = {
             }),
         },
     ],
-    Arch.ARM64: [
+    (Arch.ARM64, BinaryFormat.ELF): [
         {
             "user": "a program that exits with code 42",
             "assistant": json.dumps({
@@ -116,13 +175,47 @@ FEW_SHOT_EXAMPLES: dict[Arch, list[dict[str, str]]] = {
             }),
         },
     ],
-    Arch.ARM32: [
+    (Arch.ARM32, BinaryFormat.ELF): [
         {
             "user": "a program that exits with code 42",
             "assistant": json.dumps({
                 "arch": "arm32",
                 "assembly": "mov r0, #42\nmov r7, #1\nsvc #0",
                 "description": "Exits with status code 42 using svc syscall",
+            }),
+        },
+    ],
+
+    # ── Windows PE ──
+    (Arch.X86_64, BinaryFormat.PE): [
+        {
+            "user": "a program that exits with code 42",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": "mov ecx, 42\nsub rsp, 0x28\nmov rax, qword ptr [0x402000]\ncall rax",
+                "description": "Exits with code 42 via ExitProcess",
+            }),
+        },
+    ],
+
+    # ── macOS Mach-O ──
+    (Arch.X86_64, BinaryFormat.MACHO): [
+        {
+            "user": "a program that exits with code 42",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": "mov rax, 0x2000001\nmov rdi, 42\nsyscall",
+                "description": "Exits with code 42 using macOS exit syscall",
+            }),
+        },
+    ],
+    (Arch.ARM64, BinaryFormat.MACHO): [
+        {
+            "user": "a program that exits with code 42",
+            "assistant": json.dumps({
+                "arch": "arm64",
+                "assembly": "mov x0, #42\nmov x16, #1\nsvc #0x80",
+                "description": "Exits with code 42 using macOS exit syscall",
             }),
         },
     ],
@@ -160,23 +253,39 @@ ARCH_NAME_MAP: dict[str, Arch] = {
 def build_messages(
     description: str,
     arch: Arch = Arch.X86_64,
+    fmt: BinaryFormat = BinaryFormat.ELF,
 ) -> list[dict[str, str]]:
     """Build the message list for an LLM completion request.
 
     Args:
         description: Natural language description of what to build.
         arch: Target architecture.
+        fmt: Target binary format (ELF, PE, or Mach-O).
 
     Returns:
         List of message dicts ready for LLMProvider.complete().
     """
+    key = (arch, fmt)
+    # Fall back to ELF context for unsupported arch+format combinations
+    if key not in ARCH_CONTEXT:
+        key = (arch, BinaryFormat.ELF)
+
+    os_info = OS_INFO.get(fmt, OS_INFO[BinaryFormat.ELF])
+    exit_instruction = EXIT_INSTRUCTIONS.get(
+        (arch, fmt),
+        EXIT_INSTRUCTIONS.get((arch, BinaryFormat.ELF), "terminate the program"),
+    )
+
     system = SYSTEM_PROMPT.format(
-        arch_context=ARCH_CONTEXT[arch],
+        arch_context=ARCH_CONTEXT[key],
         arch_name=arch.value,
+        os_name=os_info["os_name"],
+        format_name=os_info["format_name"],
+        exit_instruction=exit_instruction,
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
-    for example in FEW_SHOT_EXAMPLES.get(arch, []):
+    for example in FEW_SHOT_EXAMPLES.get((arch, fmt), FEW_SHOT_EXAMPLES.get((arch, BinaryFormat.ELF), [])):
         messages.append({"role": "user", "content": example["user"]})
         messages.append({"role": "assistant", "content": example["assistant"]})
 

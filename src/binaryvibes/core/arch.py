@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 from dataclasses import dataclass
 from enum import Enum
 
@@ -16,6 +17,24 @@ class Arch(Enum):
     X86_32 = "x86_32"
     ARM64 = "arm64"
     ARM32 = "arm32"
+
+
+class BinaryFormat(Enum):
+    """Output binary format."""
+
+    ELF = "elf"
+    PE = "pe"
+    MACHO = "macho"
+
+
+def detect_native_format() -> BinaryFormat:
+    """Return the binary format native to the current OS."""
+    system = platform.system()
+    if system == "Windows":
+        return BinaryFormat.PE
+    elif system == "Darwin":
+        return BinaryFormat.MACHO
+    return BinaryFormat.ELF
 
 
 class Endianness(Enum):

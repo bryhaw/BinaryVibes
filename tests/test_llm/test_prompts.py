@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat
 from binaryvibes.llm.prompts import (
     ARCH_CONTEXT,
     AssemblyPlan,
@@ -53,7 +53,25 @@ class TestBuildMessages:
 
     def test_all_architectures_have_context(self):
         for arch in Arch:
-            assert arch in ARCH_CONTEXT
+            assert (arch, BinaryFormat.ELF) in ARCH_CONTEXT
+
+    def test_pe_prompt_contains_windows(self):
+        msgs = build_messages("exit 42", Arch.X86_64, BinaryFormat.PE)
+        assert "Windows" in msgs[0]["content"]
+        assert "ExitProcess" in msgs[0]["content"]
+
+    def test_macho_prompt_contains_macos(self):
+        msgs = build_messages("exit 42", Arch.X86_64, BinaryFormat.MACHO)
+        assert "macOS" in msgs[0]["content"]
+        assert "0x2000001" in msgs[0]["content"]
+
+    def test_elf_backward_compat(self):
+        msgs = build_messages("exit 42")
+        assert "Linux" in msgs[0]["content"]
+
+    def test_unsupported_combo_falls_back_to_elf(self):
+        msgs = build_messages("exit 42", Arch.ARM32, BinaryFormat.PE)
+        assert "ARM32" in msgs[0]["content"] or "ARM" in msgs[0]["content"]
 
 
 class TestBuildErrorRecoveryMessages:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat
 
 
 @click.group()
@@ -199,22 +199,27 @@ def diff(path_a: str, path_b: str) -> None:
 
 @cli.command()
 @click.option("--arch", "-a", default="x86_64", type=click.Choice([a.value for a in Arch]))
+@click.option("--format", "-f", "fmt", default=None,
+              type=click.Choice([f.value for f in BinaryFormat]),
+              help="Binary format (default: auto-detect from OS)")
 @click.option("--asm", required=True, help="Assembly instructions for the binary")
 @click.option("--output", "-O", required=True, type=click.Path(), help="Output file path")
-def generate(arch: str, asm: str, output: str) -> None:
+def generate(arch: str, fmt: str | None, asm: str, output: str) -> None:
     """Generate a minimal binary from assembly."""
+    from binaryvibes.core.arch import detect_native_format
     from binaryvibes.synthesis.assembler import Assembler
     from binaryvibes.synthesis.generator import BinaryBuilder
 
     try:
         target_arch = Arch(arch)
+        target_fmt = BinaryFormat(fmt) if fmt else detect_native_format()
         assembler = Assembler(target_arch)
         code = assembler.assemble(asm)
         builder = BinaryBuilder()
-        bf = builder.set_arch(target_arch).add_code(code).build()
+        bf = builder.set_arch(target_arch).set_format(target_fmt).add_code(code).build()
         with open(output, "wb") as f:
             f.write(bf.raw)
-        click.echo(f"Generated {len(bf.raw)} byte binary → {output}")
+        click.echo(f"Generated {len(bf.raw)} byte {target_fmt.value} binary → {output}")
     except Exception as exc:
         click.echo(f"Generate error: {exc}", err=True)
         raise SystemExit(1) from None
@@ -381,6 +386,9 @@ def analyze(path: str, offset: str, size: str | None, name: str, arch: str) -> N
     "--arch", "-a", default="x86_64", type=click.Choice([a.value for a in Arch]),
     help="Target architecture",
 )
+@click.option("--format", "-f", "fmt", default=None,
+              type=click.Choice([f.value for f in BinaryFormat]),
+              help="Binary format (default: auto-detect from OS)")
 @click.option("--provider", "-p", default=None, help="LLM provider (openai or anthropic)")
 @click.option("--model", "-m", default=None, help="LLM model name")
 @click.option("--api-key", default=None, help="LLM API key (or set BV_LLM_API_KEY)")
@@ -391,6 +399,7 @@ def build(
     description: str,
     output: str,
     arch: str,
+    fmt: str | None,
     provider: str | None,
     model: str | None,
     api_key: str | None,
@@ -400,7 +409,7 @@ def build(
 ) -> None:
     """Build a binary from a natural language description using an LLM.
 
-    Describe what you want and BinaryVibes will generate a working ELF binary.
+    Describe what you want and BinaryVibes will generate a working binary.
 
     Examples:
 
@@ -409,6 +418,8 @@ def build(
         bv build "a program that writes hello world to stdout" --output hello.bin
 
         bv build "fibonacci of 10" --provider anthropic --model claude-sonnet-4-20250514
+
+        bv build "exit with code 0" --format pe --output test.exe
     """
     from binaryvibes.llm.agent import BuildAgent
     from binaryvibes.llm.provider import LLMError, create_provider
@@ -425,10 +436,12 @@ def build(
         raise SystemExit(1) from None
 
     target_arch = Arch(arch)
-    agent = BuildAgent(llm, arch=target_arch, max_retries=retries, verify=verify)
+    target_fmt = BinaryFormat(fmt) if fmt else None
+    agent = BuildAgent(llm, arch=target_arch, fmt=target_fmt, max_retries=retries, verify=verify)
 
     click.echo(f"Building: {description}")
     click.echo(f"Target:   {target_arch.value}")
+    click.echo(f"Format:   {agent.fmt.value}")
     click.echo()
 
     try:
@@ -442,6 +455,7 @@ def build(
         f.write(result.binary.raw)
 
     click.echo(f"Description: {result.description}")
+    click.echo(f"Format:   {result.fmt.value}")
     click.echo(f"Assembly ({result.arch.value}):")
     for line in result.assembly.strip().split("\n"):
         click.echo(f"  {line}")

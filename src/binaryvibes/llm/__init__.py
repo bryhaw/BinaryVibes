@@ -1,5 +1,6 @@
 """LLM provider abstraction for BinaryVibes."""
 
+from binaryvibes.core.arch import BinaryFormat
 from binaryvibes.llm.agent import BuildAgent, BuildResult
 from binaryvibes.llm.provider import (
     AnthropicProvider,
@@ -11,6 +12,7 @@ from binaryvibes.llm.provider import (
 
 __all__ = [
     "AnthropicProvider",
+    "BinaryFormat",
     "BuildAgent",
     "BuildResult",
     "LLMError",

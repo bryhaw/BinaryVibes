@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat
 from binaryvibes.llm.agent import BuildAgent, BuildResult, _entry_point
 from binaryvibes.llm.provider import LLMError, LLMResponse
 from binaryvibes.synthesis.generator import (
@@ -77,7 +77,7 @@ class TestBuildAgent:
             "description": "Exits with code 42 (32-bit)",
         })
         provider = _mock_provider([llm_response])
-        agent = BuildAgent(provider, arch=Arch.X86_32, verify=False)
+        agent = BuildAgent(provider, arch=Arch.X86_32, fmt=BinaryFormat.ELF, verify=False)
         result = agent.build("a program that exits with code 42")
 
         assert result.arch == Arch.X86_32
@@ -191,7 +191,7 @@ class TestBuildAgent:
             "description": "Exit 0",
         })
         provider = _mock_provider([llm_response])
-        agent = BuildAgent(provider, arch=Arch.X86_64, verify=False)
+        agent = BuildAgent(provider, arch=Arch.X86_64, fmt=BinaryFormat.ELF, verify=False)
         result = agent.build("exit 0")
 
         assert result.binary.raw[:4] == b"\x7fELF"
@@ -209,6 +209,7 @@ class TestBuildResult:
             binary=binary,
             assembly="ret",
             arch=Arch.X86_64,
+            fmt=BinaryFormat.ELF,
             description="return",
             verified=False,
         )
