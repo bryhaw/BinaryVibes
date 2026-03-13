@@ -19,6 +19,10 @@ bv info ./some_binary
 
 # Disassemble a region
 bv disasm ./some_binary --offset 0x1000 --count 200
+
+# Build a binary from natural language (requires LLM API key)
+export BV_LLM_API_KEY=your-key-here
+bv build "a program that exits with code 42" --verify
 ```
 
 ## Architecture
@@ -44,4 +48,5 @@ Intent (natural language)
 | Disassembly | [Capstone](https://www.capstone-engine.org) | Multi-arch disassembler |
 | Assembly | [Keystone](https://www.keystone-engine.org) | Multi-arch assembler |
 | Emulation | [Unicorn](https://www.unicorn-engine.org) | CPU emulator for verification |
+| LLM integration | [OpenAI](https://openai.com) / [Anthropic](https://anthropic.com) | Natural-language → binary synthesis |
 | CLI | [Click](https://click.palletsprojects.com) | Command-line interface |

@@ -372,3 +372,92 @@ def analyze(path: str, offset: str, size: str | None, name: str, arch: str) -> N
     except Exception as exc:
         click.echo(f"Analysis error: {exc}", err=True)
         raise SystemExit(1) from None
+
+
+@cli.command()
+@click.argument("description")
+@click.option("--output", "-O", default="output.bin", type=click.Path(), help="Output file path")
+@click.option(
+    "--arch", "-a", default="x86_64", type=click.Choice([a.value for a in Arch]),
+    help="Target architecture",
+)
+@click.option("--provider", "-p", default=None, help="LLM provider (openai or anthropic)")
+@click.option("--model", "-m", default=None, help="LLM model name")
+@click.option("--api-key", default=None, help="LLM API key (or set BV_LLM_API_KEY)")
+@click.option("--base-url", default=None, help="API base URL (OpenAI-compatible providers)")
+@click.option("--verify/--no-verify", default=True, help="Verify via emulation")
+@click.option("--retries", default=3, help="Max LLM retries on assembly failure")
+def build(
+    description: str,
+    output: str,
+    arch: str,
+    provider: str | None,
+    model: str | None,
+    api_key: str | None,
+    base_url: str | None,
+    verify: bool,
+    retries: int,
+) -> None:
+    """Build a binary from a natural language description using an LLM.
+
+    Describe what you want and BinaryVibes will generate a working ELF binary.
+
+    Examples:
+
+        bv build "a program that exits with code 42"
+
+        bv build "a program that writes hello world to stdout" --output hello.bin
+
+        bv build "fibonacci of 10" --provider anthropic --model claude-sonnet-4-20250514
+    """
+    from binaryvibes.llm.agent import BuildAgent
+    from binaryvibes.llm.provider import LLMError, create_provider
+
+    try:
+        llm = create_provider(
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+        )
+    except LLMError as e:
+        click.echo(f"Configuration error: {e}", err=True)
+        raise SystemExit(1) from None
+
+    target_arch = Arch(arch)
+    agent = BuildAgent(llm, arch=target_arch, max_retries=retries, verify=verify)
+
+    click.echo(f"Building: {description}")
+    click.echo(f"Target:   {target_arch.value}")
+    click.echo()
+
+    try:
+        result = agent.build(description)
+    except LLMError as e:
+        click.echo(f"Build failed: {e}", err=True)
+        raise SystemExit(1) from None
+
+    # Write the binary
+    with open(output, "wb") as f:
+        f.write(result.binary.raw)
+
+    click.echo(f"Description: {result.description}")
+    click.echo(f"Assembly ({result.arch.value}):")
+    for line in result.assembly.strip().split("\n"):
+        click.echo(f"  {line}")
+    click.echo()
+    click.echo(f"Binary size: {len(result.binary.raw)} bytes")
+
+    if result.verified:
+        click.echo(
+            f"Verification: PASSED ({result.emulation_result.instructions_executed} instructions)"
+        )
+    elif result.emulation_result and result.emulation_result.error:
+        click.echo(f"Verification: FAILED ({result.emulation_result.error})")
+    elif not verify:
+        click.echo("Verification: skipped")
+
+    if result.retries_used > 0:
+        click.echo(f"LLM retries: {result.retries_used}")
+
+    click.echo(f"Output: {output}")

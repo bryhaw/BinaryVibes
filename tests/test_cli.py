@@ -77,3 +77,15 @@ def test_disasm_zero_count(tiny_elf: Path):
 def test_disasm_help():
     result = _run("disasm", "--help")
     assert result.exit_code == 0
+
+
+# ── build command ───────────────────────────────────────────────────
+
+
+def test_build_command_missing_api_key(monkeypatch):
+    """bv build should fail gracefully when no API key is configured."""
+    monkeypatch.delenv("BV_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("BV_LLM_PROVIDER", raising=False)
+    result = _run("build", "a program that exits with code 42")
+    assert result.exit_code == 1
+    assert "API key" in result.output or "Configuration error" in result.output

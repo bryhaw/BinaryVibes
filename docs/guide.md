@@ -944,6 +944,129 @@ The Intent Engine generates architecture-appropriate code:
 
 ---
 
+## LLM-Driven Binary Synthesis
+
+**Scenario:** You want to describe a program in plain English and get back a working ELF binary — no compiler, no source files, no manual assembly. BinaryVibes uses an LLM to translate your intent into assembly, assembles it, wraps it in an ELF, and optionally verifies it via emulation.
+
+### Installation
+
+LLM support requires additional dependencies:
+
+```bash
+pip install -e ".[llm]"    # install with LLM support
+pip install -e ".[dev]"    # dev mode already includes LLM deps
+```
+
+### Configuration
+
+Set environment variables to configure your LLM provider:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BV_LLM_PROVIDER` | Provider name (`openai` or `anthropic`) | `openai` |
+| `BV_LLM_API_KEY` | API key (**required**) | — |
+| `BV_LLM_MODEL` | Model name | `gpt-4o` (openai) / `claude-sonnet-4-20250514` (anthropic) |
+| `BV_LLM_BASE_URL` | Custom base URL for OpenAI-compatible APIs | — |
+
+```bash
+# Minimal setup
+export BV_LLM_API_KEY=your-key-here
+
+# Or fully explicit
+export BV_LLM_PROVIDER=anthropic
+export BV_LLM_API_KEY=sk-ant-...
+export BV_LLM_MODEL=claude-sonnet-4-20250514
+```
+
+### CLI
+
+```bash
+# Basic usage — describe what you want
+bv build "a program that exits with code 42"
+
+# Specify output file and architecture
+bv build "a program that writes hello world to stdout" --output hello.bin
+
+# Enable emulation-based verification
+bv build "fibonacci of 10" --arch x86_64 --verify
+```
+
+#### Provider selection
+
+```bash
+# Use Anthropic
+bv build "exit 0" --provider anthropic --model claude-sonnet-4-20250514
+
+# Use OpenAI (default)
+bv build "exit 0" --provider openai --model gpt-4o
+
+# Use local models (Ollama, vLLM, etc.) via OpenAI-compatible API
+bv build "exit 0" --base-url http://localhost:11434/v1 --api-key ollama
+```
+
+#### Full option reference
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output, -O` | `output.bin` | Output file path |
+| `--arch, -a` | `x86_64` | Target architecture (`x86_64`, `x86_32`, `arm64`, `arm32`) |
+| `--provider, -p` | `openai` | LLM provider (`openai` or `anthropic`) |
+| `--model, -m` | provider default | Model name |
+| `--api-key` | `$BV_LLM_API_KEY` | API key |
+| `--base-url` | — | Custom API URL for OpenAI-compatible endpoints |
+| `--verify/--no-verify` | `--verify` | Emulation verification after build |
+| `--retries` | `3` | Max retries on failure |
+
+### Python API
+
+```python
+from binaryvibes.core.arch import Arch
+from binaryvibes.llm import BuildAgent, create_provider
+
+# create_provider() reads BV_LLM_* environment variables
+provider = create_provider()
+agent = BuildAgent(provider, arch=Arch.X86_64, verify=True)
+result = agent.build("a program that exits with code 42")
+
+print(result.description)      # "Exits with code 42"
+print(result.assembly)         # "mov rax, 60\nmov rdi, 42\nsyscall"
+print(result.verified)         # True
+print(result.binary.raw[:4])   # b'\x7fELF'
+
+# Write to disk
+with open("output.bin", "wb") as f:
+    f.write(result.binary.raw)
+```
+
+### Supported providers
+
+| Provider | Models | Notes |
+|----------|--------|-------|
+| **OpenAI** | GPT-4o, GPT-4, GPT-3.5 | Default provider |
+| **Anthropic** | Claude Sonnet, Opus, Haiku | Set `--provider anthropic` |
+| **Ollama** | Any local model | Use `--base-url http://localhost:11434/v1` |
+| **vLLM / Together / Groq** | Varies | Any OpenAI-compatible endpoint via `--base-url` |
+
+### Error handling and retries
+
+`bv build` automatically retries when the LLM produces invalid assembly or the resulting binary fails verification. By default it retries up to 3 times (`--retries`). Each retry feeds the error message back to the LLM so it can self-correct.
+
+If all retries are exhausted, the command exits with a non-zero status and prints the last error. Common failure modes:
+
+- **Invalid assembly** — the LLM generated syntax the assembler doesn't understand
+- **Verification failure** — the binary assembled correctly but didn't behave as expected during emulation
+- **Provider errors** — rate limits, auth failures, or network issues (not retried)
+
+### Tips
+
+- **Start simple** — begin with straightforward descriptions ("exit with code 0") and build complexity gradually.
+- **Always use `--verify`** — emulation catches subtle assembly bugs that are hard to spot visually.
+- **Try different models** — larger models (GPT-4o, Claude Sonnet) produce better assembly than smaller ones.
+- **Use local models for iteration** — Ollama is free and fast for experimentation before switching to a cloud model.
+- **Be specific** — "a program that writes the string 'hello' to stdout using write syscall" works better than "hello world program".
+
+---
+
 ## Python API Reference (Quick)
 
 ```python
@@ -987,6 +1110,9 @@ from binaryvibes.workflows.hooking import (
     hook_function, unhook_function, hook_with_code, detour_call
 )
 
+# --- LLM ---
+from binaryvibes.llm import BuildAgent, create_provider           # LLM-driven binary synthesis
+
 # --- Verify ---
 from binaryvibes.verify.emulator import Emulator                  # Emulate code regions
 ```
@@ -995,7 +1121,7 @@ from binaryvibes.verify.emulator import Emulator                  # Emulate code
 
 ## CLI Reference
 
-BinaryVibes ships with the `bv` command — 13 subcommands covering the full workflow:
+BinaryVibes ships with the `bv` command — 14 subcommands covering the full workflow:
 
 ### `bv info <path>`
 Display metadata for a binary file (size, format, architecture).
@@ -1158,6 +1284,24 @@ bv analyze binary.elf --offset 0x1000 --size 0x80 --name "check_auth"
 | `--size, -s` | auto | Code region size |
 | `--name, -n` | `""` | Function name label |
 | `--arch, -a` | `x86_64` | Architecture |
+
+### `bv build <description>`
+Generate a binary from a natural-language description using an LLM. Requires `pip install -e ".[llm]"` and a configured API key (see [LLM-Driven Binary Synthesis](#llm-driven-binary-synthesis)).
+
+```bash
+bv build "a program that exits with code 42" --output exit42.bin --verify
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output, -O` | `output.bin` | Output file path |
+| `--arch, -a` | `x86_64` | Target architecture |
+| `--provider, -p` | `openai` | LLM provider (`openai` or `anthropic`) |
+| `--model, -m` | provider default | Model name |
+| `--api-key` | `$BV_LLM_API_KEY` | API key |
+| `--base-url` | — | Custom API URL |
+| `--verify/--no-verify` | `--verify` | Emulation verification |
+| `--retries` | `3` | Max retries on failure |
 
 ---
 
