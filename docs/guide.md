@@ -615,12 +615,12 @@ print(hex_dump_diff(a, b, context=16))
 
 ## Use Case 7: Generate Binaries from Scratch
 
-**Scenario:** You need to create a minimal ELF binary programmatically — for testing, as a payload, or as a host for transplanted code.
+**Scenario:** You need to create a minimal binary programmatically — for testing, as a payload, or as a host for transplanted code. BinaryVibes supports ELF (Linux), PE (Windows), and Mach-O (macOS) output.
 
 ### CLI
 
 ```bash
-# Generate a minimal x86_64 binary that exits with code 42
+# Generate a minimal x86_64 binary that exits with code 42 (auto-detects native format)
 bv generate \
     --asm "mov eax, 60; mov edi, 42; syscall" \
     --output exit42
@@ -628,6 +628,10 @@ bv generate \
 # Output: Generated 132 byte binary → exit42
 chmod +x exit42 && ./exit42; echo $?
 # 42
+
+# Generate a PE binary (Windows) or Mach-O binary (macOS) explicitly
+bv generate --asm "mov eax, 60; mov edi, 42; syscall" --format pe --output exit42.exe
+bv generate --asm "mov eax, 60; mov edi, 42; syscall" --format macho --output exit42
 ```
 
 ### Python API — BinaryBuilder
@@ -635,26 +639,37 @@ chmod +x exit42 && ./exit42; echo $?
 ```python
 from binaryvibes.core.arch import Arch
 from binaryvibes.synthesis.assembler import Assembler
-from binaryvibes.synthesis.generator import BinaryBuilder
+from binaryvibes.synthesis.generator import BinaryBuilder, BinaryFormat, detect_native_format
 
 # Assemble our code
 asm = Assembler(Arch.X86_64)
 code = asm.assemble("mov eax, 60; mov edi, 42; syscall")
 
-# Build a minimal ELF64 binary
+# Build a binary using the native format for the current OS
 binary = (
     BinaryBuilder()
     .set_arch(Arch.X86_64)
+    .set_format(detect_native_format())  # ELF on Linux, PE on Windows, Mach-O on macOS
     .set_base_address(0x400000)
     .add_code(code)
     .add_data(b"Hello, BinaryVibes!\x00")
     .build()
 )
 
+# Or target a specific format explicitly
+pe_binary = (
+    BinaryBuilder()
+    .set_arch(Arch.X86_64)
+    .set_format(BinaryFormat.PE)
+    .set_base_address(0x400000)
+    .add_code(code)
+    .build()
+)
+
 with open("exit42", "wb") as f:
     f.write(binary.raw)
 
-print(f"Generated {len(binary.raw)} byte ELF64 binary")
+print(f"Generated {len(binary.raw)} byte binary")
 print(f"Architecture: {binary.arch}")
 print(f"Format: {binary.format_name}")
 ```
@@ -681,7 +696,12 @@ binary_arm = (
 print(f"ELF64 AArch64: {len(binary_arm.raw)} bytes")
 ```
 
-**What's happening:** `BinaryBuilder` constructs minimal-but-valid ELF binaries with proper headers, a single `PT_LOAD` segment, and your code placed right after the program header. The entry point is automatically calculated. Supported formats: ELF64 (x86_64, AArch64) and ELF32 (x86_32).
+**What's happening:** `BinaryBuilder` constructs minimal-but-valid binaries with proper headers and your code placed at the entry point. Supported formats:
+- **ELF** (Linux) — ELF64 (x86_64, AArch64) and ELF32 (x86_32), with a single `PT_LOAD` segment
+- **PE** (Windows) — imports `ExitProcess`, `GetStdHandle`, `WriteFile` from `kernel32.dll`
+- **Mach-O** (macOS) — uses direct macOS syscalls (no dynamic linking). ARM64 binaries require ad-hoc code signing: `codesign -s - binary`
+
+Use `detect_native_format()` for auto-detection or `BinaryFormat.ELF` / `BinaryFormat.PE` / `BinaryFormat.MACHO` for explicit selection.
 
 ---
 
@@ -946,7 +966,9 @@ The Intent Engine generates architecture-appropriate code:
 
 ## LLM-Driven Binary Synthesis
 
-**Scenario:** You want to describe a program in plain English and get back a working ELF binary — no compiler, no source files, no manual assembly. BinaryVibes uses an LLM to translate your intent into assembly, assembles it, wraps it in an ELF, and optionally verifies it via emulation.
+**Scenario:** You want to describe a program in plain English and get back a working binary — no compiler, no source files, no manual assembly. BinaryVibes uses an LLM to translate your intent into assembly, assembles it, wraps it in the appropriate binary format (ELF, PE, or Mach-O), and optionally verifies it via emulation.
+
+BinaryVibes auto-detects the native format for your OS (Windows → PE, macOS → Mach-O, Linux → ELF), or you can explicitly choose a format with the `--format` flag for cross-compilation.
 
 ### Installation
 
@@ -981,7 +1003,7 @@ export BV_LLM_MODEL=claude-sonnet-4-20250514
 ### CLI
 
 ```bash
-# Basic usage — describe what you want
+# Basic usage — auto-detects native format for your OS
 bv build "a program that exits with code 42"
 
 # Specify output file and architecture
@@ -990,6 +1012,28 @@ bv build "a program that writes hello world to stdout" --output hello.bin
 # Enable emulation-based verification
 bv build "fibonacci of 10" --arch x86_64 --verify
 ```
+
+#### Multi-OS output
+
+```bash
+# Windows (auto-detected on Windows, or explicit from any OS)
+bv build "exit with code 42" --output test.exe
+bv build "exit with code 42" --format pe --output test.exe
+
+# macOS
+bv build "exit with code 42" --format macho --output test
+
+# Linux (still works as before)
+bv build "exit with code 42" --format elf --output test
+
+# Cross-compile: generate Linux ELF on Windows
+bv build "exit with code 42" --format elf --output test.bin
+```
+
+> **Note:** Mach-O ARM64 binaries require ad-hoc code signing on macOS to run:
+> ```bash
+> codesign -s - binary
+> ```
 
 #### Provider selection
 
@@ -1010,6 +1054,7 @@ bv build "exit 0" --base-url http://localhost:11434/v1 --api-key ollama
 |--------|---------|-------------|
 | `--output, -O` | `output.bin` | Output file path |
 | `--arch, -a` | `x86_64` | Target architecture (`x86_64`, `x86_32`, `arm64`, `arm32`) |
+| `--format, -f` | auto-detect | Binary format (`elf`, `pe`, `macho`). Default: native OS format |
 | `--provider, -p` | `openai` | LLM provider (`openai` or `anthropic`) |
 | `--model, -m` | provider default | Model name |
 | `--api-key` | `$BV_LLM_API_KEY` | API key |
@@ -1022,6 +1067,7 @@ bv build "exit 0" --base-url http://localhost:11434/v1 --api-key ollama
 ```python
 from binaryvibes.core.arch import Arch
 from binaryvibes.llm import BuildAgent, create_provider
+from binaryvibes.synthesis.generator import BinaryFormat
 
 # create_provider() reads BV_LLM_* environment variables
 provider = create_provider()
@@ -1032,6 +1078,11 @@ print(result.description)      # "Exits with code 42"
 print(result.assembly)         # "mov rax, 60\nmov rdi, 42\nsyscall"
 print(result.verified)         # True
 print(result.binary.raw[:4])   # b'\x7fELF'
+
+# Build for a specific format (e.g. PE for Windows)
+agent_pe = BuildAgent(provider, arch=Arch.X86_64, fmt=BinaryFormat.PE, verify=True)
+result_pe = agent_pe.build("a program that exits with code 42")
+print(result_pe.binary.raw[:2])  # b'MZ'
 
 # Write to disk
 with open("output.bin", "wb") as f:
@@ -1087,7 +1138,9 @@ from binaryvibes.analysis.differ import byte_diff, hex_dump_diff  # Binary diffi
 # --- Synthesis ---
 from binaryvibes.synthesis.patcher import Patch, apply_patches    # Low-level patching
 from binaryvibes.synthesis.assembler import Assembler              # Mnemonics → bytes
-from binaryvibes.synthesis.generator import BinaryBuilder          # Generate ELF from scratch
+from binaryvibes.synthesis.generator import (                      # Generate binaries from scratch
+    BinaryBuilder, BinaryFormat, detect_native_format
+)
 from binaryvibes.synthesis.transplant import (                     # Code transplant
     FunctionExtractor, Transplanter
 )
@@ -1215,6 +1268,7 @@ Generate a minimal binary from assembly.
 
 ```bash
 bv generate --asm "mov eax, 60; syscall" --output minimal.elf --arch x86_64
+bv generate --asm "mov eax, 60; syscall" --format pe --output minimal.exe
 ```
 
 | Option | Required | Description |
@@ -1222,6 +1276,7 @@ bv generate --asm "mov eax, 60; syscall" --output minimal.elf --arch x86_64
 | `--asm` | Yes | Assembly instructions |
 | `--output, -O` | Yes | Output file path |
 | `--arch, -a` | No | Architecture (default: `x86_64`) |
+| `--format, -f` | No | Binary format: `elf`, `pe`, `macho` (default: auto-detect) |
 
 ### `bv audit <path>`
 Run a security audit on a binary.
@@ -1290,12 +1345,14 @@ Generate a binary from a natural-language description using an LLM. Requires `pi
 
 ```bash
 bv build "a program that exits with code 42" --output exit42.bin --verify
+bv build "a program that exits with code 42" --format pe --output exit42.exe
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--output, -O` | `output.bin` | Output file path |
 | `--arch, -a` | `x86_64` | Target architecture |
+| `--format, -f` | auto-detect | Binary format: `elf`, `pe`, `macho` (default: native OS format) |
 | `--provider, -p` | `openai` | LLM provider (`openai` or `anthropic`) |
 | `--model, -m` | provider default | Model name |
 | `--api-key` | `$BV_LLM_API_KEY` | API key |

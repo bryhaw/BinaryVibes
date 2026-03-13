@@ -23,6 +23,11 @@ bv disasm ./some_binary --offset 0x1000 --count 200
 # Build a binary from natural language (requires LLM API key)
 export BV_LLM_API_KEY=your-key-here
 bv build "a program that exits with code 42" --verify
+
+# Multi-OS: auto-detects native format, or specify explicitly
+bv build "exit with code 42" --format pe --output test.exe    # Windows PE
+bv build "exit with code 42" --format macho --output test      # macOS Mach-O
+bv build "exit with code 42" --format elf --output test        # Linux ELF
 ```
 
 ## Architecture
@@ -45,6 +50,7 @@ Intent (natural language)
 | Layer | Library | Purpose |
 |-------|---------|---------|
 | Format parsing | [LIEF](https://lief.re) | Read/write ELF, PE, Mach-O |
+| Binary output | BinaryBuilder | Generate ELF (Linux), PE (Windows), Mach-O (macOS) |
 | Disassembly | [Capstone](https://www.capstone-engine.org) | Multi-arch disassembler |
 | Assembly | [Keystone](https://www.keystone-engine.org) | Multi-arch assembler |
 | Emulation | [Unicorn](https://www.unicorn-engine.org) | CPU emulator for verification |
