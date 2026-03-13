@@ -123,6 +123,10 @@ PRE-DEFINED UTILITY FUNCTIONS — automatically available, just call them:
   __bv_msgbox(rcx=text, rdx=title)  — show a MessageBox (MB_OK)
   __bv_http_get(rcx=url, rdx=buffer, r8=max_size) -> rax=bytes_read
     Fetches URL via HTTP GET into buffer, null-terminates, returns bytes read (0=fail)
+  __bv_get_computer_name(rcx=buffer) -> rax=1 success, 0 fail
+    Fills buffer with computer name (buffer must be >=256 bytes)
+  __bv_get_pid() -> rax=process_id
+    Returns current process ID
 
   IMPORTANT: These helpers save and restore registers properly.
   Use callee-saved registers (rbx, r12-r15) for values that must survive across calls.

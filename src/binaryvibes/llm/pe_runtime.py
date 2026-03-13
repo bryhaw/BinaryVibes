@@ -7,6 +7,7 @@ IAT address reference (ImageBase 0x400000 + .idata RVA 0x2000):
   ExitProcess      0x402000    GetStdHandle     0x402008
   WriteFile        0x402010    ReadFile         0x402018
   CreateFileA      0x402020    CloseHandle      0x402028
+  GetComputerNameA 0x402038    GetCurrentProcessId 0x402050
   Sleep            0x402060    lstrlenA         0x4020A8
   MessageBoxA      0x4020F0
   InternetOpenA    0x402100    InternetOpenUrlA 0x402108
@@ -184,6 +185,28 @@ __bv_close_handle:
   add rsp, 0x28
   ret
 
+__bv_get_computer_name:
+  push rbx
+  sub rsp, 0x30
+  mov rbx, rcx
+  mov dword ptr [rsp+0x28], 256
+  mov rcx, rbx
+  lea rdx, [rsp+0x28]
+  mov eax, 0x402038
+  mov rax, [rax]
+  call rax
+  add rsp, 0x30
+  pop rbx
+  ret
+
+__bv_get_pid:
+  sub rsp, 0x28
+  mov eax, 0x402050
+  mov rax, [rax]
+  call rax
+  add rsp, 0x28
+  ret
+
 __bv_msgbox:
   sub rsp, 0x28
   mov r8, rdx
@@ -202,7 +225,7 @@ __bv_http_get:
   push rdi
   push r12
   push r13
-  sub rsp, 0x58
+  sub rsp, 0x60
   mov r12, rcx
   mov r13, rdx
   mov rbx, r8
@@ -239,13 +262,13 @@ __bv_hg_read_loop:
   mov r8, rbx
   sub r8, r12
   jbe __bv_hg_read_done
-  lea r9, [rsp+0x50]
+  lea r9, [rsp+0x58]
   mov eax, 0x402110
   mov rax, [rax]
   call rax
   test eax, eax
   jz __bv_hg_read_done
-  mov eax, dword ptr [rsp+0x50]
+  mov eax, dword ptr [rsp+0x58]
   test eax, eax
   jz __bv_hg_read_done
   add r12, rax
@@ -270,7 +293,7 @@ __bv_hg_fail:
   xor eax, eax
 
 __bv_hg_ret:
-  add rsp, 0x58
+  add rsp, 0x60
   pop r13
   pop r12
   pop rdi
