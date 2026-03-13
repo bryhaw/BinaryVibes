@@ -48,3 +48,25 @@ class TestAssembler:
 
         assert insn is not None
         assert insn.mnemonic == "nop"
+
+
+class TestAssembleWithDiagnostics:
+    """Tests for detailed assembly error reporting."""
+
+    def test_success_returns_bytes(self):
+        asm = Assembler(Arch.X86_64)
+        result = asm.assemble_with_diagnostics("nop", base_addr=0)
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+
+    def test_identifies_failing_line(self):
+        asm = Assembler(Arch.X86_64)
+        code = "mov rax, 1\nbogus_instruction\nnop"
+        with pytest.raises(ValueError, match=r"line 2.*bogus_instruction"):
+            asm.assemble_with_diagnostics(code)
+
+    def test_valid_multiline(self):
+        asm = Assembler(Arch.X86_64)
+        code = "push rbx\nmov rax, 42\npop rbx\nret"
+        result = asm.assemble_with_diagnostics(code)
+        assert len(result) > 0

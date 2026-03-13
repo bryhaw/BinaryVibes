@@ -142,7 +142,7 @@ class BuildAgent:
             try:
                 entry = _entry_point(plan.arch, self.fmt)
                 assembler = Assembler(plan.arch)
-                code = assembler.assemble(assembly, base_addr=entry)
+                code = assembler.assemble_with_diagnostics(assembly, base_addr=entry)
             except Exception as e:
                 last_error = str(e)
                 logger.warning("Assembly failed (attempt %d): %s", attempt + 1, e)

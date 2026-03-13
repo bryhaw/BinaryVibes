@@ -95,19 +95,26 @@ CONSTANTS:
   OPEN_EXISTING = 3, CREATE_ALWAYS = 2
   HEAP_ZERO_MEMORY = 0x08
 
-PRE-DEFINED UTILITY FUNCTIONS — these are automatically available, just call them:
-  __bv_print_str(rcx=pointer)  — prints null-terminated string to stdout
-  __bv_print_newline()          — prints CR+LF
-  __bv_print_num(rcx=value)    — prints unsigned 64-bit number as decimal
+PRE-DEFINED UTILITY FUNCTIONS — automatically available, just call them:
+  __bv_print_str(rcx=pointer)     — print null-terminated string to stdout
+  __bv_print_newline()            — print CR+LF
+  __bv_print_num(rcx=value)       — print unsigned 64-bit decimal number
+  __bv_get_stdout() -> rax        — get stdout handle
+  __bv_write(rcx=buf, rdx=len)   — write bytes to stdout
+  __bv_sleep(rcx=milliseconds)    — sleep, preserves all callee-saved regs
+  __bv_open_file_read(rcx=filename_ptr) -> rax  — open file (returns -1 on failure)
+  __bv_read_file(rcx=handle, rdx=buffer, r8=max_bytes) -> rax=bytes_read
+  __bv_close_handle(rcx=handle)   — close file/handle
 
-  Example: lea rcx, [rip+msg] / call __bv_print_str / call __bv_print_newline
+  IMPORTANT: These helpers save and restore registers properly.
+  Use callee-saved registers (rbx, r12-r15) for values that must survive across calls.
 
 PROGRAM STRUCTURE:
 1. Start with: sub rsp, 0x28 (align stack + shadow space for main)
-2. Write your program logic — call __bv_print_str, __bv_print_newline, __bv_print_num as needed
+2. Write your program logic — call helpers as needed
 3. Put string data AFTER all code using: label: .asciz "text"
 4. End with: xor ecx, ecx / mov eax, 0x402000 / mov rax, [rax] / call rax
-5. Do NOT define __bv_print_str, __bv_print_newline, or __bv_print_num — they are pre-defined""",
+5. Do NOT define any __bv_ functions — they are pre-defined""",
 
     (Arch.X86_32, BinaryFormat.PE): """Target: x86_32 (32-bit Intel/AMD, Windows)
 Registers: eax, ebx, ecx, edx, esi, edi, ebp, esp
@@ -268,6 +275,71 @@ FEW_SHOT_EXAMPLES: dict[tuple[Arch, BinaryFormat], list[dict[str, str]]] = {
                     'msg: .asciz "Hello, World!"'
                 ),
                 "description": "Prints Hello World using pre-defined helpers, then exits",
+            }),
+        },
+        {
+            "user": "print the value of the USERNAME environment variable",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": (
+                    "sub rsp, 0x128\n"
+                    "lea rcx, [rip+env_name]\n"
+                    "lea rdx, [rsp+0x20]\n"
+                    "mov r8, 256\n"
+                    "mov eax, 0x4020B0\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "test eax, eax\n"
+                    "jz done\n"
+                    "lea rcx, [rsp+0x20]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "done:\n"
+                    "xor ecx, ecx\n"
+                    "mov eax, 0x402000\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    'env_name: .asciz "USERNAME"'
+                ),
+                "description": "Reads USERNAME env var into stack buffer and prints it",
+            }),
+        },
+        {
+            "user": "read and print the contents of a file called data.txt",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": (
+                    "sub rsp, 0x128\n"
+                    "lea rcx, [rip+fname]\n"
+                    "call __bv_open_file_read\n"
+                    "cmp rax, -1\n"
+                    "je fail\n"
+                    "mov rbx, rax\n"
+                    "mov rcx, rbx\n"
+                    "lea rdx, [rsp+0x20]\n"
+                    "mov r8, 256\n"
+                    "call __bv_read_file\n"
+                    "mov byte ptr [rsp+rax+0x20], 0\n"
+                    "lea rcx, [rsp+0x20]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "mov rcx, rbx\n"
+                    "call __bv_close_handle\n"
+                    "xor ecx, ecx\n"
+                    "jmp exit\n"
+                    "fail:\n"
+                    "lea rcx, [rip+errmsg]\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
+                    "mov ecx, 1\n"
+                    "exit:\n"
+                    "mov eax, 0x402000\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    'fname: .asciz "data.txt"\n'
+                    'errmsg: .asciz "Error: could not open file"'
+                ),
+                "description": "Opens data.txt, reads 256 bytes, prints contents, handles errors",
             }),
         },
     ],
