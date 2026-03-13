@@ -1,7 +1,7 @@
 """PE (Windows) binary generation.
 
 Generates minimal PE64 (x86_64) Windows executables that import
-ExitProcess, GetStdHandle, and WriteFile from kernel32.dll via an
+commonly-used Windows API functions from kernel32.dll via an
 Import Address Table (IAT) at known virtual addresses.
 """
 
@@ -20,16 +20,41 @@ PE_IDATA_RVA = 0x2000
 
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 
+# Functions imported from kernel32.dll.
+_KERNEL32_FUNCTIONS = [
+    "ExitProcess",
+    "GetStdHandle",
+    "WriteFile",
+    "ReadFile",
+    "CreateFileA",
+    "CloseHandle",
+    "GetFileSize",
+    "GetComputerNameA",
+    "GetLocalTime",
+    "GlobalMemoryStatusEx",
+    "GetCurrentProcessId",
+    "GetCommandLineA",
+    "Sleep",
+    "GetProcessHeap",
+    "HeapAlloc",
+    "HeapFree",
+    "FindFirstFileA",
+    "FindNextFileA",
+    "FindClose",
+    "SetConsoleTitleA",
+    "GetLastError",
+    "lstrlenA",
+    "GetEnvironmentVariableA",
+    "GetTickCount64",
+]
+
 # IAT virtual addresses exported for use by the prompt/codegen system.
 # The IAT lives at the very start of .idata (RVA 0x2000), so each 8-byte
 # entry maps to ImageBase + 0x2000 + index*8.
 PE_IAT_EXPORTS: dict[str, int] = {
-    "ExitProcess": PE_IMAGE_BASE + PE_IDATA_RVA,       # 0x402000
-    "GetStdHandle": PE_IMAGE_BASE + PE_IDATA_RVA + 8,  # 0x402008
-    "WriteFile": PE_IMAGE_BASE + PE_IDATA_RVA + 16,    # 0x402010
+    name: PE_IMAGE_BASE + PE_IDATA_RVA + i * 8
+    for i, name in enumerate(_KERNEL32_FUNCTIONS)
 }
-
-_IMPORT_FUNCTIONS = ["ExitProcess", "GetStdHandle", "WriteFile"]
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +80,7 @@ def _build_idata_section() -> tuple[bytes, int, int, int]:
     Returns:
         ``(section_bytes, iat_offset, ilt_offset, idt_offset)``
     """
-    num_funcs = len(_IMPORT_FUNCTIONS)
+    num_funcs = len(_KERNEL32_FUNCTIONS)
     table_size = (num_funcs + 1) * 8  # entries + null terminator
 
     iat_offset = 0
@@ -66,7 +91,7 @@ def _build_idata_section() -> tuple[bytes, int, int, int]:
     # -- Hint/Name entries --------------------------------------------------
     hint_names = bytearray()
     hint_name_rvas: list[int] = []
-    for func in _IMPORT_FUNCTIONS:
+    for func in _KERNEL32_FUNCTIONS:
         rva = PE_IDATA_RVA + hint_names_start + len(hint_names)
         hint_name_rvas.append(rva)
         entry = struct.pack("<H", 0) + func.encode("ascii") + b"\x00"
@@ -109,13 +134,10 @@ def _build_idata_section() -> tuple[bytes, int, int, int]:
 def build_pe64(code: bytes, data: bytes = b"") -> bytes:
     """Generate a minimal PE64 (x86_64) Windows executable.
 
-    The binary imports ExitProcess, GetStdHandle and WriteFile from
+    The binary imports commonly-used Windows API functions from
     kernel32.dll.  IAT entries reside at fixed virtual addresses so that
-    generated machine code can reference them directly::
-
-        ExitProcess   → 0x402000
-        GetStdHandle  → 0x402008
-        WriteFile     → 0x402010
+    generated machine code can reference them directly (see
+    ``PE_IAT_EXPORTS`` for the full mapping).
 
     Args:
         code: Machine code placed at the start of the ``.text`` section.
@@ -129,7 +151,7 @@ def build_pe64(code: bytes, data: bytes = b"") -> bytes:
     # -- .idata section -----------------------------------------------------
     idata_raw, iat_off, _ilt_off, idt_off = _build_idata_section()
 
-    num_funcs = len(_IMPORT_FUNCTIONS)
+    num_funcs = len(_KERNEL32_FUNCTIONS)
     iat_size = (num_funcs + 1) * 8
 
     # -- sizes (file layout) ------------------------------------------------
@@ -195,7 +217,7 @@ def build_pe64(code: bytes, data: bytes = b"") -> bytes:
         headers_size,           # SizeOfHeaders
         0,                      # CheckSum
         3,                      # Subsystem (IMAGE_SUBSYSTEM_WINDOWS_CUI)
-        0x8160,                 # DllCharacteristics
+        0x8100,                 # DllCharacteristics (ASLR disabled)
         0x100000,               # SizeOfStackReserve
         0x1000,                 # SizeOfStackCommit
         0x100000,               # SizeOfHeapReserve

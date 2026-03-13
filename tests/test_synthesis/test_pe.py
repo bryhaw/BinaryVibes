@@ -180,11 +180,12 @@ class TestImportTable:
 
     def test_iat_contains_hint_name_rvas(self) -> None:
         section, _iat_off, _ilt_off, _idt_off = _build_idata_section()
-        # First 3 entries should be non-zero RVAs; 4th should be null
-        for i in range(3):
+        num_funcs = len(PE_IAT_EXPORTS)
+        # All entries should be non-zero RVAs; last should be null
+        for i in range(num_funcs):
             entry = struct.unpack_from("<Q", section, i * 8)[0]
             assert entry != 0, f"IAT[{i}] should be non-zero"
-        null_term = struct.unpack_from("<Q", section, 3 * 8)[0]
+        null_term = struct.unpack_from("<Q", section, num_funcs * 8)[0]
         assert null_term == 0
 
     def test_dll_name_in_section(self) -> None:
@@ -193,9 +194,8 @@ class TestImportTable:
 
     def test_function_names_in_section(self) -> None:
         section, *_ = _build_idata_section()
-        assert b"ExitProcess\x00" in section
-        assert b"GetStdHandle\x00" in section
-        assert b"WriteFile\x00" in section
+        for name in PE_IAT_EXPORTS:
+            assert name.encode("ascii") + b"\x00" in section
 
 
 # ── Exported constants ──────────────────────────────────────────────

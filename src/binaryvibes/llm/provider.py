@@ -138,9 +138,9 @@ class GitHubModelsProvider(OpenAIProvider):
         except FileNotFoundError:
             raise LLMError(
                 "GitHub CLI (gh) not found. Install it from https://cli.github.com"
-            )
+            ) from None
         except subprocess.TimeoutExpired:
-            raise LLMError("Timed out getting GitHub token from gh CLI.")
+            raise LLMError("Timed out getting GitHub token from gh CLI.") from None
 
     @staticmethod
     def is_available() -> bool:
