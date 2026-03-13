@@ -50,18 +50,104 @@ Key syscalls: exit=1 (r0=code), write=4 (r0=fd, r1=buf, r2=len), read=3
 Address size: 32-bit""",
 
     # ── Windows PE ──
-    (Arch.X86_64, BinaryFormat.PE): """Target: x86_64 (64-bit Intel/AMD, Windows)
-Registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
-Calling convention: Microsoft x64 — args in rcx, rdx, r8, r9; return in rax
-Shadow space: MUST reserve 32 bytes (sub rsp, 0x28) before any call
-API functions are called via Import Address Table (IAT) at fixed addresses:
-  ExitProcess:  load from [0x402000] then call — void ExitProcess(UINT uExitCode)
-  GetStdHandle: load from [0x402008] then call — HANDLE GetStdHandle(DWORD nStdHandle)
-  WriteFile:    load from [0x402010] then call — BOOL WriteFile(HANDLE, LPCVOID,
-                 DWORD, LPDWORD, LPOVERLAPPED)
-To call a function: mov rax, qword ptr [IAT_address]; call rax
-Constants: STD_OUTPUT_HANDLE = -11 (0xFFFFFFFFFFFFFFF5)
-IMPORTANT: Always call ExitProcess to terminate. Never use syscall on Windows.""",
+    (Arch.X86_64, BinaryFormat.PE): """Target: x86_64 (64-bit, Windows PE)
+
+CALLING CONVENTION (Microsoft x64):
+  Args: rcx, rdx, r8, r9 (then stack). Return in rax.
+  Shadow space: ALWAYS sub rsp, 0x28 before calls (32 bytes shadow + 8 align).
+  Callee-saved: rbx, rbp, rdi, rsi, r12-r15. Caller-saved: rax, rcx, rdx, r8-r11.
+
+API CALL PATTERN — load function pointer from IAT, then call:
+  mov eax, IAT_ADDR    ; load IAT address into rax (32-bit mov zero-extends)
+  mov rax, [rax]       ; dereference: load actual function pointer
+  call rax             ; call the function
+
+AVAILABLE WINDOWS API FUNCTIONS (kernel32.dll):
+  ExitProcess(uExitCode)                          IAT: 0x402000
+  GetStdHandle(nStdHandle) -> HANDLE               IAT: 0x402008
+  WriteFile(hFile, lpBuf, nBytes, lpWritten, lpOv) IAT: 0x402010
+  ReadFile(hFile, lpBuf, nBytes, lpRead, lpOv)     IAT: 0x402018
+  CreateFileA(name, access, share, sa, disp, flags, tmpl) IAT: 0x402020
+  CloseHandle(hObject)                             IAT: 0x402028
+  GetFileSize(hFile, lpHigh) -> DWORD              IAT: 0x402030
+  GetComputerNameA(lpBuf, lpnSize)                 IAT: 0x402038
+  GetLocalTime(lpSystemTime)                       IAT: 0x402040
+  GlobalMemoryStatusEx(lpBuffer)                   IAT: 0x402048
+  GetCurrentProcessId() -> DWORD                   IAT: 0x402050
+  GetCommandLineA() -> LPSTR                       IAT: 0x402058
+  Sleep(dwMilliseconds)                            IAT: 0x402060
+  GetProcessHeap() -> HANDLE                       IAT: 0x402068
+  HeapAlloc(hHeap, dwFlags, dwBytes) -> LPVOID     IAT: 0x402070
+  HeapFree(hHeap, dwFlags, lpMem) -> BOOL          IAT: 0x402078
+  FindFirstFileA(lpFileName, lpFindData) -> HANDLE IAT: 0x402080
+  FindNextFileA(hFind, lpFindData) -> BOOL         IAT: 0x402088
+  FindClose(hFind) -> BOOL                         IAT: 0x402090
+  SetConsoleTitleA(lpTitle) -> BOOL                IAT: 0x402098
+  GetLastError() -> DWORD                          IAT: 0x4020A0
+  lstrlenA(lpString) -> int                        IAT: 0x4020A8
+  GetEnvironmentVariableA(name, buf, size) -> DWORD IAT: 0x4020B0
+  GetTickCount64() -> ULONGLONG                    IAT: 0x4020B8
+
+CONSTANTS:
+  STD_INPUT_HANDLE  = -10 (0xFFFFFFFFFFFFFFF6)
+  STD_OUTPUT_HANDLE = -11 (0xFFFFFFFFFFFFFFF5)
+  GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000
+  OPEN_EXISTING = 3, CREATE_ALWAYS = 2
+  HEAP_ZERO_MEMORY = 0x08
+
+UTILITY FUNCTIONS — Define these as labeled subroutines and call them:
+
+; print_str: print null-terminated string pointed to by rcx
+print_str:
+  push rbx
+  push rsi
+  sub rsp, 0x38
+  mov rsi, rcx
+  mov eax, 0x4020A8
+  mov rax, [rax]
+  call rax
+  mov rbx, rax
+  mov ecx, -11
+  mov eax, 0x402008
+  mov rax, [rax]
+  call rax
+  mov rcx, rax
+  mov rdx, rsi
+  mov r8, rbx
+  lea r9, [rsp+0x30]
+  mov qword ptr [rsp+0x20], 0
+  mov eax, 0x402010
+  mov rax, [rax]
+  call rax
+  add rsp, 0x38
+  pop rsi
+  pop rbx
+  ret
+
+; print_newline: print CR+LF
+print_newline:
+  sub rsp, 0x38
+  mov word ptr [rsp+0x30], 0x0A0D
+  mov ecx, -11
+  mov eax, 0x402008
+  mov rax, [rax]
+  call rax
+  mov rcx, rax
+  lea rdx, [rsp+0x30]
+  mov r8, 2
+  lea r9, [rsp+0x28]
+  mov qword ptr [rsp+0x20], 0
+  mov eax, 0x402010
+  mov rax, [rax]
+  call rax
+  add rsp, 0x38
+  ret
+
+PROGRAM STRUCTURE:
+1. Start with: sub rsp, 0x28 (align stack + shadow space for main)
+2. Define utility functions (print_str, print_newline, etc.) as labeled code
+3. Put string data AFTER all code using: label: .asciz "text"
+4. End with: xor ecx, ecx / mov eax, 0x402000 / mov rax, [rax] / call rax""",
 
     (Arch.X86_32, BinaryFormat.PE): """Target: x86_32 (32-bit Intel/AMD, Windows)
 Registers: eax, ebx, ecx, edx, esi, edi, ebp, esp
@@ -118,12 +204,12 @@ framework. Your job is to write assembly code that will be assembled into a stan
 {os_name} {format_name} binary.
 
 CRITICAL RULES:
-1. Write ONLY pure assembly instructions — no directives, no labels, no comments.
+1. Labels, .asciz (null-terminated strings), and .byte directives ARE allowed and encouraged.
 2. The code will be placed at the entry point of a minimal binary. Execution starts at the \
  first instruction.
 3. The program MUST terminate properly: {exit_instruction}
-4. Use ONLY instructions — no pseudo-ops, no macros, no preprocessor directives.
-5. For string data, embed bytes directly using techniques like pushing values onto the stack.
+4. No macros or preprocessor directives. Assembly instructions, labels, .asciz, and .byte are fine.
+5. For string data, use labeled .asciz directives (e.g., msg: .asciz "Hello") placed AFTER all code.
 6. Keep it simple and correct. Prefer straightforward implementations.
 7. Each instruction goes on its own line.
 
@@ -199,8 +285,71 @@ FEW_SHOT_EXAMPLES: dict[tuple[Arch, BinaryFormat], list[dict[str, str]]] = {
             "user": "a program that exits with code 42",
             "assistant": json.dumps({
                 "arch": "x86_64",
-                "assembly": "mov ecx, 42\nsub rsp, 0x28\nmov rax, qword ptr [0x402000]\ncall rax",
+                "assembly": (
+                    "sub rsp, 0x28\nmov ecx, 42\n"
+                    "mov eax, 0x402000\nmov rax, [rax]\ncall rax"
+                ),
                 "description": "Exits with code 42 via ExitProcess",
+            }),
+        },
+        {
+            "user": "a program that prints Hello World to the console",
+            "assistant": json.dumps({
+                "arch": "x86_64",
+                "assembly": (
+                    "sub rsp, 0x28\n"
+                    "lea rcx, [rip+msg]\n"
+                    "call print_str\n"
+                    "call print_newline\n"
+                    "xor ecx, ecx\n"
+                    "mov eax, 0x402000\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "print_str:\n"
+                    "push rbx\n"
+                    "push rsi\n"
+                    "sub rsp, 0x38\n"
+                    "mov rsi, rcx\n"
+                    "mov eax, 0x4020A8\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "mov rbx, rax\n"
+                    "mov ecx, -11\n"
+                    "mov eax, 0x402008\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "mov rcx, rax\n"
+                    "mov rdx, rsi\n"
+                    "mov r8, rbx\n"
+                    "lea r9, [rsp+0x30]\n"
+                    "mov qword ptr [rsp+0x20], 0\n"
+                    "mov eax, 0x402010\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "add rsp, 0x38\n"
+                    "pop rsi\n"
+                    "pop rbx\n"
+                    "ret\n"
+                    "print_newline:\n"
+                    "sub rsp, 0x38\n"
+                    "mov word ptr [rsp+0x30], 0x0A0D\n"
+                    "mov ecx, -11\n"
+                    "mov eax, 0x402008\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "mov rcx, rax\n"
+                    "lea rdx, [rsp+0x30]\n"
+                    "mov r8, 2\n"
+                    "lea r9, [rsp+0x28]\n"
+                    "mov qword ptr [rsp+0x20], 0\n"
+                    "mov eax, 0x402010\n"
+                    "mov rax, [rax]\n"
+                    "call rax\n"
+                    "add rsp, 0x38\n"
+                    "ret\n"
+                    'msg: .asciz "Hello, World!"'
+                ),
+                "description": "Prints Hello World to console using print_str helper, then exits",
             }),
         },
     ],
@@ -239,8 +388,7 @@ The problematic assembly was:
 ```
 
 Please fix the assembly code and respond with the corrected JSON object. Remember:
-- No directives (.section, .global, .text, .data)
-- No labels
+- Labels and .asciz/.byte directives are allowed
 - No comments
 - Only pure assembly instructions
 - Must end with exit syscall
