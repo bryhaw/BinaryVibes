@@ -131,11 +131,18 @@ class BuildAgent:
                 retries_used += 1
                 continue
 
+            # Append PE runtime helpers if targeting Windows PE
+            assembly = plan.assembly
+            if self.fmt == BinaryFormat.PE:
+                from binaryvibes.llm.pe_runtime import PE_RUNTIME_ASM
+
+                assembly = assembly + "\n" + PE_RUNTIME_ASM
+
             # Try to assemble
             try:
                 entry = _entry_point(plan.arch, self.fmt)
                 assembler = Assembler(plan.arch)
-                code = assembler.assemble(plan.assembly, base_addr=entry)
+                code = assembler.assemble(assembly, base_addr=entry)
             except Exception as e:
                 last_error = str(e)
                 logger.warning("Assembly failed (attempt %d): %s", attempt + 1, e)

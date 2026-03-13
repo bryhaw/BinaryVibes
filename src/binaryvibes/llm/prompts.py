@@ -95,59 +95,19 @@ CONSTANTS:
   OPEN_EXISTING = 3, CREATE_ALWAYS = 2
   HEAP_ZERO_MEMORY = 0x08
 
-UTILITY FUNCTIONS — Define these as labeled subroutines and call them:
+PRE-DEFINED UTILITY FUNCTIONS — these are automatically available, just call them:
+  __bv_print_str(rcx=pointer)  — prints null-terminated string to stdout
+  __bv_print_newline()          — prints CR+LF
+  __bv_print_num(rcx=value)    — prints unsigned 64-bit number as decimal
 
-; print_str: print null-terminated string pointed to by rcx
-print_str:
-  push rbx
-  push rsi
-  sub rsp, 0x38
-  mov rsi, rcx
-  mov eax, 0x4020A8
-  mov rax, [rax]
-  call rax
-  mov rbx, rax
-  mov ecx, -11
-  mov eax, 0x402008
-  mov rax, [rax]
-  call rax
-  mov rcx, rax
-  mov rdx, rsi
-  mov r8, rbx
-  lea r9, [rsp+0x30]
-  mov qword ptr [rsp+0x20], 0
-  mov eax, 0x402010
-  mov rax, [rax]
-  call rax
-  add rsp, 0x38
-  pop rsi
-  pop rbx
-  ret
-
-; print_newline: print CR+LF
-print_newline:
-  sub rsp, 0x38
-  mov word ptr [rsp+0x30], 0x0A0D
-  mov ecx, -11
-  mov eax, 0x402008
-  mov rax, [rax]
-  call rax
-  mov rcx, rax
-  lea rdx, [rsp+0x30]
-  mov r8, 2
-  lea r9, [rsp+0x28]
-  mov qword ptr [rsp+0x20], 0
-  mov eax, 0x402010
-  mov rax, [rax]
-  call rax
-  add rsp, 0x38
-  ret
+  Example: lea rcx, [rip+msg] / call __bv_print_str / call __bv_print_newline
 
 PROGRAM STRUCTURE:
 1. Start with: sub rsp, 0x28 (align stack + shadow space for main)
-2. Define utility functions (print_str, print_newline, etc.) as labeled code
+2. Write your program logic — call __bv_print_str, __bv_print_newline, __bv_print_num as needed
 3. Put string data AFTER all code using: label: .asciz "text"
-4. End with: xor ecx, ecx / mov eax, 0x402000 / mov rax, [rax] / call rax""",
+4. End with: xor ecx, ecx / mov eax, 0x402000 / mov rax, [rax] / call rax
+5. Do NOT define __bv_print_str, __bv_print_newline, or __bv_print_num — they are pre-defined""",
 
     (Arch.X86_32, BinaryFormat.PE): """Target: x86_32 (32-bit Intel/AMD, Windows)
 Registers: eax, ebx, ecx, edx, esi, edi, ebp, esp
@@ -299,57 +259,15 @@ FEW_SHOT_EXAMPLES: dict[tuple[Arch, BinaryFormat], list[dict[str, str]]] = {
                 "assembly": (
                     "sub rsp, 0x28\n"
                     "lea rcx, [rip+msg]\n"
-                    "call print_str\n"
-                    "call print_newline\n"
+                    "call __bv_print_str\n"
+                    "call __bv_print_newline\n"
                     "xor ecx, ecx\n"
                     "mov eax, 0x402000\n"
                     "mov rax, [rax]\n"
                     "call rax\n"
-                    "print_str:\n"
-                    "push rbx\n"
-                    "push rsi\n"
-                    "sub rsp, 0x38\n"
-                    "mov rsi, rcx\n"
-                    "mov eax, 0x4020A8\n"
-                    "mov rax, [rax]\n"
-                    "call rax\n"
-                    "mov rbx, rax\n"
-                    "mov ecx, -11\n"
-                    "mov eax, 0x402008\n"
-                    "mov rax, [rax]\n"
-                    "call rax\n"
-                    "mov rcx, rax\n"
-                    "mov rdx, rsi\n"
-                    "mov r8, rbx\n"
-                    "lea r9, [rsp+0x30]\n"
-                    "mov qword ptr [rsp+0x20], 0\n"
-                    "mov eax, 0x402010\n"
-                    "mov rax, [rax]\n"
-                    "call rax\n"
-                    "add rsp, 0x38\n"
-                    "pop rsi\n"
-                    "pop rbx\n"
-                    "ret\n"
-                    "print_newline:\n"
-                    "sub rsp, 0x38\n"
-                    "mov word ptr [rsp+0x30], 0x0A0D\n"
-                    "mov ecx, -11\n"
-                    "mov eax, 0x402008\n"
-                    "mov rax, [rax]\n"
-                    "call rax\n"
-                    "mov rcx, rax\n"
-                    "lea rdx, [rsp+0x30]\n"
-                    "mov r8, 2\n"
-                    "lea r9, [rsp+0x28]\n"
-                    "mov qword ptr [rsp+0x20], 0\n"
-                    "mov eax, 0x402010\n"
-                    "mov rax, [rax]\n"
-                    "call rax\n"
-                    "add rsp, 0x38\n"
-                    "ret\n"
                     'msg: .asciz "Hello, World!"'
                 ),
-                "description": "Prints Hello World to console using print_str helper, then exits",
+                "description": "Prints Hello World using pre-defined helpers, then exits",
             }),
         },
     ],
