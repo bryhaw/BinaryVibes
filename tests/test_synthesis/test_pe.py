@@ -5,7 +5,6 @@ from __future__ import annotations
 import struct
 
 import lief
-import pytest
 
 from binaryvibes.synthesis.pe import (
     PE_CODE_RVA,
@@ -13,12 +12,10 @@ from binaryvibes.synthesis.pe import (
     PE_IAT_EXPORTS,
     PE_IDATA_RVA,
     PE_IMAGE_BASE,
-    PE_SECTION_ALIGNMENT,
     _align,
     _build_idata_section,
     build_pe64,
 )
-
 
 # x86_64 machine code: ExitProcess(42) via IAT
 # mov ecx, 42              → b9 2a 00 00 00
@@ -81,7 +78,7 @@ class TestBuildPE64Basic:
     def test_subsystem_console(self) -> None:
         pe = build_pe64(EXIT42_CODE)
         # Subsystem offset within opt_win (starts at 0x70):
-        # ImageBase(8) + SectionAlign(4) + FileAlign(4) + 6×H(12) +
+        # ImageBase(8) + SectionAlign(4) + FileAlign(4) + 6xH(12) +
         # Win32VersionValue(4) + SizeOfImage(4) + SizeOfHeaders(4) +
         # CheckSum(4) = 44
         subsystem = struct.unpack_from("<H", pe, 0x70 + 44)[0]

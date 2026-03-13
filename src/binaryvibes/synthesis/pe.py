@@ -204,7 +204,7 @@ def build_pe64(code: bytes, data: bytes = b"") -> bytes:
         16,                     # NumberOfRvaAndSizes
     )
 
-    # ── Data directories (16 × 8 = 128 bytes) ────────────────────────────
+    # ── Data directories (16 x 8 = 128 bytes) ────────────────────────────
     data_dirs = bytearray(128)
     # [1] Import Table → IDT
     struct.pack_into("<II", data_dirs, 1 * 8,

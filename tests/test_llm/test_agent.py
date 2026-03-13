@@ -215,3 +215,45 @@ class TestBuildResult:
         )
         with pytest.raises(AttributeError):
             result.verified = True
+
+
+class TestBuildAgentWithFormat:
+    def test_build_pe_format(self):
+        """Build with PE format produces valid PE."""
+        llm_response = json.dumps({
+            "arch": "x86_64",
+            "assembly": "mov ecx, 42\nsub rsp, 0x28\nmov rax, qword ptr [0x402000]\ncall rax",
+            "description": "Exits with code 42 via ExitProcess",
+        })
+        provider = _mock_provider([llm_response])
+        agent = BuildAgent(provider, arch=Arch.X86_64, fmt=BinaryFormat.PE, verify=False)
+        result = agent.build("exit 42")
+        assert result.binary.raw[:2] == b"MZ"
+        assert result.fmt == BinaryFormat.PE
+
+    def test_build_macho_format(self):
+        """Build with Mach-O format produces valid Mach-O."""
+        llm_response = json.dumps({
+            "arch": "x86_64",
+            "assembly": "mov rax, 0x2000001\nmov rdi, 42\nsyscall",
+            "description": "Exits with code 42 (macOS)",
+        })
+        provider = _mock_provider([llm_response])
+        agent = BuildAgent(provider, arch=Arch.X86_64, fmt=BinaryFormat.MACHO, verify=False)
+        result = agent.build("exit 42")
+        import struct
+        magic = struct.unpack("<I", result.binary.raw[:4])[0]
+        assert magic == 0xFEEDFACF
+        assert result.fmt == BinaryFormat.MACHO
+
+    def test_build_result_has_format(self):
+        """BuildResult includes format field."""
+        llm_response = json.dumps({
+            "arch": "x86_64",
+            "assembly": "mov rax, 60\nmov rdi, 0\nsyscall",
+            "description": "exit",
+        })
+        provider = _mock_provider([llm_response])
+        agent = BuildAgent(provider, arch=Arch.X86_64, fmt=BinaryFormat.ELF, verify=False)
+        result = agent.build("exit 0")
+        assert result.fmt == BinaryFormat.ELF

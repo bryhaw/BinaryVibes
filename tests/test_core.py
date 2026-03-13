@@ -10,7 +10,14 @@ import keystone
 import lief
 import pytest
 
-from binaryvibes.core.arch import ARCH_CONFIGS, Arch, ArchConfig, Endianness
+from binaryvibes.core.arch import (
+    ARCH_CONFIGS,
+    Arch,
+    ArchConfig,
+    BinaryFormat,
+    Endianness,
+    detect_native_format,
+)
 from binaryvibes.core.binary import BinaryFile
 
 # ── Arch tests ──────────────────────────────────────────────────────
@@ -137,3 +144,17 @@ class TestBinaryFileWrite:
         assert len(tiny_elf_binary.raw) > 0
         file_size = tiny_elf_binary.path.stat().st_size
         assert len(tiny_elf_binary.raw) == file_size
+
+
+# ── BinaryFormat tests ──────────────────────────────────────────────
+
+
+class TestBinaryFormat:
+    def test_enum_values(self):
+        assert BinaryFormat.ELF.value == "elf"
+        assert BinaryFormat.PE.value == "pe"
+        assert BinaryFormat.MACHO.value == "macho"
+
+    def test_detect_native_format(self):
+        fmt = detect_native_format()
+        assert isinstance(fmt, BinaryFormat)

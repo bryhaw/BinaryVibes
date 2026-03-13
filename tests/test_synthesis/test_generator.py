@@ -5,7 +5,7 @@ from __future__ import annotations
 import lief
 import pytest
 
-from binaryvibes.core.arch import Arch
+from binaryvibes.core.arch import Arch, BinaryFormat
 from binaryvibes.core.binary import BinaryFile
 from binaryvibes.synthesis.generator import (
     DEFAULT_BASE_ADDR,
@@ -195,3 +195,70 @@ class TestEdgeCases:
     def test_default_base_address(self) -> None:
         """Default base address is 0x400000."""
         assert DEFAULT_BASE_ADDR == 0x400000
+
+
+# ── Format dispatch ─────────────────────────────────────────────────
+
+
+class TestFormatDispatch:
+    """Test BinaryBuilder format selection."""
+
+    def test_set_format_returns_builder(self):
+        builder = BinaryBuilder()
+        assert builder.set_format(BinaryFormat.ELF) is builder
+
+    def test_elf_format_explicit(self):
+        binary = (
+            BinaryBuilder()
+            .set_arch(Arch.X86_64)
+            .set_format(BinaryFormat.ELF)
+            .add_code(SAMPLE_CODE)
+            .build()
+        )
+        assert binary.raw[:4] == b"\x7fELF"
+
+    def test_pe_format(self):
+        binary = (
+            BinaryBuilder()
+            .set_arch(Arch.X86_64)
+            .set_format(BinaryFormat.PE)
+            .add_code(SAMPLE_CODE)
+            .build()
+        )
+        assert binary.raw[:2] == b"MZ"
+
+    def test_macho_format_x86_64(self):
+        import struct
+        binary = (
+            BinaryBuilder()
+            .set_arch(Arch.X86_64)
+            .set_format(BinaryFormat.MACHO)
+            .add_code(SAMPLE_CODE)
+            .build()
+        )
+        magic = struct.unpack("<I", binary.raw[:4])[0]
+        assert magic == 0xFEEDFACF
+
+    def test_macho_format_arm64(self):
+        import struct
+
+        import keystone
+        ks = keystone.Ks(keystone.KS_ARCH_ARM64, keystone.KS_MODE_LITTLE_ENDIAN)
+        arm_code, _ = ks.asm("mov x0, #42; mov x8, #93; svc #0")
+        binary = (
+            BinaryBuilder()
+            .set_arch(Arch.ARM64)
+            .set_format(BinaryFormat.MACHO)
+            .add_code(bytes(arm_code))
+            .build()
+        )
+        magic = struct.unpack("<I", binary.raw[:4])[0]
+        assert magic == 0xFEEDFACF
+
+    def test_pe_unsupported_arch(self):
+        with pytest.raises(NotImplementedError):
+            BinaryBuilder().set_arch(Arch.ARM64).set_format(BinaryFormat.PE).add_code(b"\xc3").build()
+
+    def test_macho_unsupported_arch(self):
+        with pytest.raises(NotImplementedError):
+            BinaryBuilder().set_arch(Arch.X86_32).set_format(BinaryFormat.MACHO).add_code(b"\xc3").build()

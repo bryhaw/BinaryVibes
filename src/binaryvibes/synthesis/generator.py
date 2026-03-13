@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-from binaryvibes.core.arch import Arch, BinaryFormat, detect_native_format
+from binaryvibes.core.arch import Arch, BinaryFormat
 from binaryvibes.core.binary import BinaryFile
 
 # ELF constants

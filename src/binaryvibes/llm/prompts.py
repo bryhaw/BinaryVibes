@@ -57,7 +57,8 @@ Shadow space: MUST reserve 32 bytes (sub rsp, 0x28) before any call
 API functions are called via Import Address Table (IAT) at fixed addresses:
   ExitProcess:  load from [0x402000] then call — void ExitProcess(UINT uExitCode)
   GetStdHandle: load from [0x402008] then call — HANDLE GetStdHandle(DWORD nStdHandle)
-  WriteFile:    load from [0x402010] then call — BOOL WriteFile(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED)
+  WriteFile:    load from [0x402010] then call — BOOL WriteFile(HANDLE, LPCVOID,
+                 DWORD, LPDWORD, LPOVERLAPPED)
 To call a function: mov rax, qword ptr [IAT_address]; call rax
 Constants: STD_OUTPUT_HANDLE = -11 (0xFFFFFFFFFFFFFFF5)
 IMPORTANT: Always call ExitProcess to terminate. Never use syscall on Windows.""",
@@ -98,8 +99,13 @@ OS_INFO: dict[BinaryFormat, dict[str, str]] = {
 
 EXIT_INSTRUCTIONS: dict[tuple[Arch, BinaryFormat], str] = {
     (Arch.X86_64, BinaryFormat.ELF): "call exit syscall (mov rax,60; mov rdi,code; syscall)",
-    (Arch.X86_64, BinaryFormat.PE): "call ExitProcess via IAT (mov ecx,code; sub rsp,0x28; mov rax,[0x402000]; call rax)",
-    (Arch.X86_64, BinaryFormat.MACHO): "call exit syscall (mov rax,0x2000001; mov rdi,code; syscall)",
+    (Arch.X86_64, BinaryFormat.PE): (
+        "call ExitProcess via IAT (mov ecx,code; sub rsp,0x28; mov rax,[0x402000]; "
+        "call rax)"
+    ),
+    (Arch.X86_64, BinaryFormat.MACHO): (
+        "call exit syscall (mov rax,0x2000001; mov rdi,code; syscall)"
+    ),
     (Arch.X86_32, BinaryFormat.ELF): "call exit via int 0x80 (mov eax,1; mov ebx,code; int 0x80)",
     (Arch.X86_32, BinaryFormat.PE): "call ExitProcess via IAT (push code; call [0x402000])",
     (Arch.ARM64, BinaryFormat.ELF): "call exit syscall (mov x0,code; mov x8,#93; svc #0)",
@@ -113,7 +119,8 @@ framework. Your job is to write assembly code that will be assembled into a stan
 
 CRITICAL RULES:
 1. Write ONLY pure assembly instructions — no directives, no labels, no comments.
-2. The code will be placed at the entry point of a minimal binary. Execution starts at the first instruction.
+2. The code will be placed at the entry point of a minimal binary. Execution starts at the \
+ first instruction.
 3. The program MUST terminate properly: {exit_instruction}
 4. Use ONLY instructions — no pseudo-ops, no macros, no preprocessor directives.
 5. For string data, embed bytes directly using techniques like pushing values onto the stack.
@@ -285,7 +292,10 @@ def build_messages(
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
-    for example in FEW_SHOT_EXAMPLES.get((arch, fmt), FEW_SHOT_EXAMPLES.get((arch, BinaryFormat.ELF), [])):
+    examples = FEW_SHOT_EXAMPLES.get((arch, fmt))
+    if examples is None:
+        examples = FEW_SHOT_EXAMPLES.get((arch, BinaryFormat.ELF), [])
+    for example in examples:
         messages.append({"role": "user", "content": example["user"]})
         messages.append({"role": "assistant", "content": example["assistant"]})
 

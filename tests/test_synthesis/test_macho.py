@@ -9,13 +9,13 @@ import pytest
 
 from binaryvibes.core.arch import Arch
 from binaryvibes.synthesis.macho import (
+    CPU_TYPE_ARM64,
+    CPU_TYPE_X86_64,
     MACHO_BASE_ADDR,
     MACHO_CODE_OFFSET,
     MACHO_CODE_VA,
     MACHO_PAGE_SIZE,
     MH_MAGIC_64,
-    CPU_TYPE_ARM64,
-    CPU_TYPE_X86_64,
     build_macho64,
 )
 
@@ -87,7 +87,7 @@ class TestBuildARM64:
         assert raw[offset : offset + len(ARM64_EXIT42)] == ARM64_EXIT42
 
     def test_page_aligned_code_offset(self) -> None:
-        raw = build_macho64(ARM64_EXIT42, arch=Arch.ARM64)
+        build_macho64(ARM64_EXIT42, arch=Arch.ARM64)
         page = MACHO_PAGE_SIZE[Arch.ARM64]
         assert MACHO_CODE_OFFSET[Arch.ARM64] % page == 0
 

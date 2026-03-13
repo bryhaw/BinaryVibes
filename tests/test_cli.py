@@ -89,3 +89,20 @@ def test_build_command_missing_api_key(monkeypatch):
     result = _run("build", "a program that exits with code 42")
     assert result.exit_code == 1
     assert "API key" in result.output or "Configuration error" in result.output
+
+
+# ── format option tests ─────────────────────────────────────────────
+
+
+def test_build_command_shows_format_option():
+    """bv build --help should mention --format."""
+    result = _run("build", "--help")
+    assert result.exit_code == 0
+    assert "--format" in result.output or "-f" in result.output
+
+
+def test_generate_command_shows_format_option():
+    """bv generate --help should mention --format."""
+    result = _run("generate", "--help")
+    assert result.exit_code == 0
+    assert "--format" in result.output or "-f" in result.output
