@@ -1,8 +1,8 @@
 # BinaryVibes
 
-**Natural language to native binary — no compiler, no source code, no build system.**
+**From natural language to native binary — skipping the high-level compiler.**
 
-An AI-native framework that generates working Windows/Linux/macOS executables directly from English descriptions. Describe what you want, get a binary that runs.
+BinaryVibes is an LLM-driven synthesis framework that generates working native executables (Windows PE, Linux ELF, macOS Mach-O) directly from English descriptions — without writing C, Rust, Go, or any high-level language. The pipeline goes from intent to x86_64 assembly to machine code bytes to a runnable binary, with a self-correcting feedback loop that catches and fixes both assembly errors and runtime crashes.
 
 ```bash
 bv build "fetch weather for Seattle, London, and Tokyo and print each"
@@ -13,199 +13,175 @@ London: ☁️  +6°C
 Tokyo: ⛅️  +8°C
 ```
 
-That's a **4KB native executable** that makes HTTP requests over the internet. No compiler was involved.
+That's a **4KB native PE executable** doing real HTTP requests. No C compiler touched it.
 
-## The Thesis
+## What "No Compiler" Actually Means (and Doesn't)
 
-Programming languages exist for human comprehension. LLMs don't need them. The end state is going from intent directly to binary — removing every intermediate layer (source code, preprocessor, compiler, linker) between what you want and what the machine runs.
+This is worth being precise about, because the claim is easy to misread.
 
-BinaryVibes proves this is viable. An LLM can reliably generate working native executables — including ones that do HTTP networking, GUI dialogs, and file I/O — without ever touching a programming language.
+**What is skipped:** A high-level language compiler — no GCC, Clang, MSVC, Rust, or Go toolchain. The LLM outputs x86_64 assembly directly, bypassing the entire layer where you'd normally write source code in a human-readable language.
 
-## What It Does
+**What still happens:** The pipeline uses Keystone, an assembler library, to translate assembly mnemonics into machine code bytes. Assembling *is* a form of compilation (one-to-one translation of text to opcodes). The PE/ELF/Mach-O builder also does linker-adjacent work: constructing binary headers, import address tables, section layouts, and DLL references. That's not zero toolchain — it's a minimal, purpose-built one.
+
+**The accurate headline:** "No high-level language compiler required" — which is still genuinely novel and interesting.
+
+## The Pipeline
 
 ```
-"fetch weather and display as an HTML dashboard"
-  → GPT-4o (via GitHub Copilot auth — zero config)
-  → x86_64 assembly with labels and data
+Natural language
+  → LLM (GPT-4o via GitHub Copilot auth)
+  → x86_64 assembly text (with labels, .asciz data, PE runtime helper calls)
   → Keystone assembler → machine code bytes
-  → PE builder (4 DLLs, 35 APIs, import tables)
-  → 4KB .exe → run → verify → open browser with styled dashboard
+  → PE/ELF/Mach-O builder (headers, IAT, section layout)
+  → native executable
+  → [optional] subprocess run → verify exit code + stdout → LLM feedback if wrong
 ```
 
-### Proven Capabilities
+The key file is `src/binaryvibes/llm/agent.py` — the `BuildAgent` class orchestrates the full loop. The assembler wraps Keystone directly (`keystone.Ks`), and the PE builder in `synthesis/pe.py` constructs a minimal PE64 with a hardcoded IAT covering 35 Windows API functions across 4 DLLs.
 
-These all build on first attempt with zero retries:
+## The Self-Correcting Feedback Loop
+
+This is the genuinely novel part. Most LLM code generation is one-shot. BinaryVibes runs a two-level retry loop:
+
+**Level 1 — Assembly errors:**  
+`assemble_with_diagnostics()` tries to assemble the full output. On failure, it bisects line-by-line to find the failing instruction, formats a precise error message (`"Assembly error on line 14: 'mov rax, [rbx+rcx*8+]' — Error: invalid operand"`), and sends it back to the LLM with the original code and error context.
+
+**Level 2 — Runtime crashes:**  
+If `--run-verify` is set, the binary is written to a temp file and executed via `subprocess.run()`. If it crashes or returns a wrong exit code, the stdout + exit code are fed back to the LLM as a new recovery prompt. The LLM sees: "You generated this assembly. It ran but crashed with exit code -1 and output: [...]". It then fixes its own logic.
+
+```python
+# agent.py — the retry loop (simplified)
+for attempt in range(max_retries):
+    assembly = llm.generate(messages)
+    try:
+        code = assembler.assemble_with_diagnostics(assembly)
+    except ValueError as asm_error:
+        messages = build_error_recovery_messages(assembly, str(asm_error), ...)
+        continue  # retry with error context
+
+    binary = builder.build(code)
+
+    if run_verify:
+        exit_code, stdout = run_binary(binary)
+        if exit_code != 0:
+            messages = build_run_error_recovery_messages(assembly, exit_code, stdout)
+            continue  # retry with runtime feedback
+    break
+```
+
+## Pre-Baked Runtime Helpers
+
+The LLM doesn't need to implement `WriteFile`, `WinHttpOpen`, or stack-aligned `MessageBoxA` calls from scratch every time. `pe_runtime.py` contains 14 pre-assembled helper routines that the LLM can call by label:
+
+| Helper | Does |
+|--------|------|
+| `__bv_print_str` | `WriteFile` to stdout with handle bookkeeping |
+| `__bv_http_get` | Full WinHTTP GET → buffer (handles session, connection, request lifecycle) |
+| `__bv_msgbox` | `MessageBoxA` with correct stack alignment |
+| `__bv_html_dashboard` | Write styled HTML to temp file, open in default browser |
+| `__bv_sleep` | `Sleep` with register preservation |
+| `__bv_print_num` | 64-bit decimal to stdout (no libc) |
+| `__bv_open_url` | `ShellExecuteA` to open URL/file |
+| `__bv_get_computer_name` | `GetComputerNameA` wrapper |
+| `__bv_get_pid` | `GetCurrentProcessId` |
+| `__bv_open_file_read` | `CreateFileA` for reading |
+| `__bv_read_file` | `ReadFile` with handle |
+| `__bv_write_file_helper` | `CreateFileA` + `WriteFile` |
+| `__bv_close_handle` | `CloseHandle` |
+| `__bv_print_newline` | CR+LF to stdout |
+
+These are appended to every PE binary. The LLM's prompts explicitly tell it these exist and how to call them. The helpers solve the hardest part of bare-metal x86_64 on Windows: register preservation across Windows API calls, stack 16-byte alignment requirements, and the IAT calling convention.
+
+## The PE Builder
+
+`synthesis/pe.py` constructs a minimal but complete PE64 executable from scratch — no linker involved, but it does every job a linker normally does:
+
+- PE/COFF headers (`IMAGE_NT_HEADERS64`, `IMAGE_OPTIONAL_HEADER64`)
+- Two sections: `.text` (code) and `.idata` (import tables)
+- Import Address Table (IAT) for 4 DLLs: `kernel32.dll`, `user32.dll`, `winhttp.dll`, `shell32.dll`
+- 35 pre-wired API imports at fixed virtual addresses so the LLM can reference them as constants
+- Section alignment to `0x1000` (virtual) and `0x200` (file)
+- Entry point calculation at `PE_IMAGE_BASE + PE_CODE_RVA`
+
+The IAT is hardcoded rather than dynamically linked — which is why cross-platform builds require generating different helpers for ELF (Linux syscalls) and Mach-O (macOS syscalls).
+
+## Proven Capabilities
+
+All of these build on first attempt with zero retries:
 
 | Program | What it does | Binary size |
 |---------|-------------|-------------|
-| Hello World | Print to console | 2 KB |
-| Environment reader | Read and display USERNAME | 3 KB |
-| Countdown timer | 5→1 with 1-second delays | 3 KB |
-| File reader | Open, read, print a text file | 3 KB |
-| File copier + GUI | Copy a file, show MessageBox confirmation | 3 KB |
-| System info | Computer name + PID + live weather | 4 KB |
-| Multi-city weather | 3 HTTP fetches (Seattle, London, Tokyo) | 4 KB |
-| Weather dashboard | HTTP fetch → styled HTML → opens browser | 4 KB |
+| Hello World | Print to stdout | 2 KB |
+| Environment reader | Read `USERNAME`, print | 3 KB |
+| Countdown timer | 5→1 with 1s Sleep calls | 3 KB |
+| File reader | `CreateFileA` + `ReadFile` + print | 3 KB |
+| File copier + GUI | `CopyFileA` + `MessageBoxA` | 3 KB |
+| System info | `GetComputerNameA` + `GetCurrentProcessId` + HTTP weather | 4 KB |
+| Multi-city weather | 3 WinHTTP GET calls | 4 KB |
+| Weather dashboard | HTTP fetch → styled HTML → `ShellExecuteA` | 4 KB |
 
-### Quick Start
+## Architecture Overview
+
+```
+src/binaryvibes/
+├── llm/
+│   ├── agent.py          — BuildAgent: orchestrates the full LLM→binary→verify loop
+│   ├── provider.py       — LLM backends: GitHub Models (Copilot auth), OpenAI, Anthropic
+│   ├── prompts.py        — System prompts, error recovery messages, response parsing
+│   └── pe_runtime.py     — 14 pre-baked x86_64 helper routines appended to PE output
+├── synthesis/
+│   ├── assembler.py      — Keystone wrapper with line-level diagnostic bisection
+│   ├── pe.py             — PE64 builder: headers, IAT, section layout (Windows)
+│   ├── macho.py          — Mach-O builder (macOS)
+│   ├── generator.py      — ELF builder + format dispatcher
+│   ├── patcher.py        — Immutable patch algebra for binary modification
+│   └── transplant.py     — Function extraction + cross-binary transplant
+├── analysis/
+│   ├── disassembler.py   — Capstone-based multi-arch disassembly
+│   ├── cfg.py            — Control-flow graph with basic block decomposition
+│   ├── symbols.py        — Symbol resolution across ELF/PE/Mach-O
+│   ├── patterns.py       — Binary pattern matching DSL
+│   ├── semantics.py      — Semantic lifting (instructions → effects)
+│   └── differ.py         — Binary diffing with similarity metrics
+├── verify/
+│   └── emulator.py       — Unicorn-based CPU emulation for pre-run verification
+└── intent/
+    └── engine.py         — High-level intent → concrete patch operations
+```
+
+## Quick Start
 
 ```bash
-# Install
+git clone https://github.com/bryhaw/BinaryVibes
+cd BinaryVibes
 pip install -e ".[dev]"
 
-# Uses your GitHub Copilot auth — no API keys needed
+# Uses GitHub Copilot auth — no separate API key needed
 gh auth login
 
-# Build something
-bv build "a program that exits with code 42" -O test.exe
-.\test.exe
-echo %ERRORLEVEL%   # 42
+# Build something simple
+bv build "exit with code 42" -O test.exe
+.\test.exe && echo %ERRORLEVEL%  # 42
 
-# Build something useful
+# Build something with HTTP
 bv build "fetch weather for Seattle from wttr.in and print it" -O weather.exe
-.\weather.exe   # Seattle: 🌦  +4°C
+.\weather.exe
 
-# Build with runtime verification (re-runs and self-corrects if it crashes)
-bv build "show computer name and PID" -O sysinfo.exe --run-verify
-
-# HTML dashboard (opens in browser)
-bv build "fetch weather and display as HTML dashboard" -O dashboard.exe
+# Build with runtime verification (re-runs and self-corrects on crash)
+bv build "show computer name and process ID" -O sysinfo.exe --run-verify
 
 # Cross-compile
-bv build "hello world" --format elf -O hello      # Linux
-bv build "hello world" --format macho -O hello     # macOS
-bv build "hello world" --format pe -O hello.exe    # Windows
+bv build "hello world" --format elf   -O hello       # Linux
+bv build "hello world" --format macho -O hello       # macOS
+bv build "hello world" --format pe    -O hello.exe   # Windows
 ```
 
-## Architecture
+## Why This Is Interesting
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  "fetch weather for Seattle"                            │  Natural language
-├─────────────────────────────────────────────────────────┤
-│  LLM Provider (GitHub Models / OpenAI / Anthropic)      │  GPT-4o via gh auth
-│  ↓ assembly + .asciz data                               │
-│  Comment stripping + PE runtime auto-append             │
-│  ↓ clean assembly text                                  │
-│  Keystone assembler (line-level error → LLM feedback)   │  Syntax errors retried
-│  ↓ machine code bytes                                   │
-│  PE/ELF/Mach-O builder (headers + imports + code)       │  Native binary format
-│  ↓ .exe / ELF / Mach-O                                 │
-│  Runtime verification (run → check → feedback → retry)  │  Crash errors retried
-├─────────────────────────────────────────────────────────┤
-│  4KB native executable                                  │  Runs on bare metal
-└─────────────────────────────────────────────────────────┘
-```
+The interesting claim isn't "no toolchain at all" — it's that an LLM can reliably generate *correct, working* x86_64 assembly for non-trivial programs (HTTP networking, GUI dialogs, file I/O) with no human-written source code and a self-correcting feedback loop that handles its own failures.
 
-### Self-Correcting Feedback Loop
+The pre-baked helpers solve a real problem: the LLM knows *what* to do (call `WinHttpOpen`, set up the connection, read the response) but consistently gets *how* wrong (wrong register clobbering, misaligned stack before API calls). Wrapping the hard parts in tested helpers and telling the LLM to call them by label is what makes complex programs work on the first attempt.
 
-The key innovation beyond basic code generation: **two-level error feedback**.
+The result is a working binary in the 2–4KB range, running on bare metal, with no C source file, no Makefile, no `gcc` invocation, and no developer between the description and the executable.
 
-1. **Assembly errors** → Keystone identifies the failing line → LLM fixes the syntax
-2. **Runtime crashes** → subprocess captures the exit code → LLM fixes the logic
-
-The LLM doesn't just generate code — it generates, builds, runs, observes, and fixes. This is what makes complex programs (HTTP, GUI, file I/O) reliable on the first attempt.
-
-## What's Inside
-
-### Binary Generation (the novel part)
-| Component | Purpose |
-|-----------|---------|
-| `llm/provider.py` | LLM backends — GitHub Models (zero config), OpenAI, Anthropic |
-| `llm/prompts.py` | Architecture + OS-specific prompts, few-shot examples |
-| `llm/agent.py` | Build agent with assembly + runtime feedback loops |
-| `llm/pe_runtime.py` | 14 pre-baked assembly helpers (print, HTTP, file I/O, GUI, HTML) |
-| `synthesis/pe.py` | PE (Windows) generator — 4 DLLs, 35 API imports |
-| `synthesis/macho.py` | Mach-O (macOS) generator |
-| `synthesis/generator.py` | ELF (Linux) generator + format dispatcher |
-
-### Binary Analysis (the foundation)
-| Component | Purpose |
-|-----------|---------|
-| `analysis/disassembler.py` | Capstone-based multi-arch disassembly |
-| `analysis/cfg.py` | Control-flow graph with basic block decomposition |
-| `analysis/symbols.py` | Symbol resolution across ELF/PE/Mach-O |
-| `analysis/patterns.py` | Binary pattern matching DSL |
-| `analysis/semantics.py` | Semantic lifting (instructions → effects) |
-| `analysis/differ.py` | Binary diffing with similarity metrics |
-| `synthesis/patcher.py` | Immutable, composable patch algebra |
-| `synthesis/transplant.py` | Function extraction and cross-binary transplant |
-| `verify/emulator.py` | Unicorn-based CPU emulation |
-| `intent/engine.py` | High-level intent → concrete patches |
-| `workflows/` | Audit, hardening, hooking, analysis workflows |
-
-### PE Runtime Helpers
-Pre-baked assembly routines auto-appended to LLM output. The LLM calls these by name — no need to implement common patterns:
-
-| Helper | Purpose |
-|--------|---------|
-| `__bv_print_str` | Print null-terminated string to stdout |
-| `__bv_print_num` | Print unsigned 64-bit decimal number |
-| `__bv_print_newline` | Print CR+LF |
-| `__bv_sleep` | Sleep N milliseconds (register-safe) |
-| `__bv_http_get` | Fetch a URL via HTTP GET → buffer |
-| `__bv_open_file_read` | Open file for reading |
-| `__bv_read_file` | Read bytes from file handle |
-| `__bv_write_file_helper` | Create and write a file |
-| `__bv_close_handle` | Close a file/handle |
-| `__bv_msgbox` | Show a Windows MessageBox |
-| `__bv_open_url` | Open URL/file in default browser |
-| `__bv_html_dashboard` | Wrap text in styled HTML, write to file, open in browser |
-| `__bv_get_computer_name` | Get computer name into buffer |
-| `__bv_get_pid` | Get current process ID |
-
-## Key Learnings
-
-### What worked
-- **Pre-baked runtime helpers are essential.** The LLM can generate correct control flow and API call sequences, but struggles with low-level details (register preservation across Windows API calls, stack alignment). Wrapping common patterns in tested helpers dramatically improved reliability.
-- **Two-level error feedback closes the loop.** Assembly syntax errors AND runtime crashes both feed back to the LLM. This is what makes complex programs work on the first attempt.
-- **Comment stripping matters.** LLMs persistently add `;` comments despite being told not to. Stripping them automatically eliminated a whole class of assembly failures.
-- **Few-shot examples are the most effective prompt engineering.** More context about APIs helped, but working examples of complete programs drove the biggest quality improvement.
-- **Labels and .asciz directives were the string handling unlock.** Initially we banned directives for simplicity. Allowing them made string data trivial and was the single biggest capability unlock.
-- **GitHub Models API for zero-config auth.** Using `gh auth token` means users don't need to manage separate API keys. This removes the biggest friction from the user experience.
-
-### What's hard
-- **String building in assembly is the LLM's ceiling.** Constructing strings dynamically (concatenation, number formatting, buffer management) is where the LLM consistently struggles. The solution was pre-baked helpers, not better prompts.
-- **Windows x64 calling convention is unforgiving.** Shadow space, stack alignment, callee-saved vs caller-saved registers — one mistake and the binary crashes with no useful error message. The runtime helpers abstract this away.
-- **JSON response format vs. assembly content.** HTML strings with quotes inside assembly inside JSON is a quoting nightmare. We solved this with the `__bv_html_dashboard` helper that bakes the template into the runtime.
-
-## What's Next
-
-### Near-term: Expand API surface
-More DLLs (ws2_32.dll for raw sockets, advapi32.dll for registry/crypto), more helpers (`__bv_json_get_value`, `__bv_tcp_connect`), multi-pass generation where the agent builds functions separately and stitches them.
-
-### Medium-term: Embedded C compilation
-The real ceiling is that LLMs are mediocre at raw assembly for complex logic but excellent at C. Embedding [TinyCC](https://bellard.org/tcc/) (a C compiler that fits in 100KB) would let the LLM generate C for the logic while BinaryVibes handles everything else — PE headers, import tables, runtime linking. Still no external toolchain. Still a single `pip install`.
-
-### Long-term: Binary-native AI
-- Train on compiled binaries to learn machine code idioms directly
-- Cross-binary function transplantation (the framework already supports this)
-- AI-driven binary optimization (like [BOLT](https://github.com/llvm/llvm-project/tree/main/bolt) but learned)
-- Decompile → modify → recompile workflows for closed-source software
-
-## Development
-
-```bash
-pip install -e ".[dev]"    # Install with all dev + LLM dependencies
-pytest tests/ -v           # 663 tests
-ruff check src/ tests/     # Lint
-bv --help                  # CLI reference
-```
-
-## Stack
-
-| Layer | Library | Purpose |
-|-------|---------|---------|
-| Format parsing | [LIEF](https://lief.re) | Read/write ELF, PE, Mach-O |
-| Binary output | BinaryBuilder | Generate ELF, PE, Mach-O from scratch |
-| Disassembly | [Capstone](https://www.capstone-engine.org) | Multi-arch disassembler |
-| Assembly | [Keystone](https://www.keystone-engine.org) | Multi-arch assembler |
-| Emulation | [Unicorn](https://www.unicorn-engine.org) | CPU emulator for verification |
-| LLM | GitHub Models / OpenAI / Anthropic | Natural language → assembly |
-| HTTP (runtime) | WinInet (kernel32) | Baked into generated binaries |
-| GUI (runtime) | user32 / shell32 | MessageBox, ShellExecute in generated binaries |
-| CLI | [Click](https://click.palletsprojects.com) | Command-line interface |
-
-## License
-
-MIT
+[View on GitHub →](https://github.com/bryhaw/BinaryVibes)
