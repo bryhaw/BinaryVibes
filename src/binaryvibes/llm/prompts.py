@@ -602,7 +602,9 @@ def parse_llm_response(text: str, expected_arch: Arch | None = None) -> Assembly
     # Try to find a JSON object in the text
     json_match = re.search(r"\{[^{}]*\}", cleaned, re.DOTALL)
     if not json_match:
-        raise ValueError(f"No JSON object found in LLM response: {text[:200]}")
+        raise ValueError(
+            f"No JSON object found in LLM response (first 100 chars): {text[:100]!r}"
+        )
 
     try:
         data = json.loads(json_match.group())

@@ -2,9 +2,35 @@
 
 from __future__ import annotations
 
+import os
+
 import click
 
 from binaryvibes.core.arch import Arch, BinaryFormat
+
+
+def _validate_output_path(output: str) -> str:
+    """Validate and resolve an output path to prevent path traversal attacks."""
+    resolved = os.path.realpath(output)
+    # Block writes to sensitive system directories
+    sensitive_prefixes = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys", "/dev")
+    for prefix in sensitive_prefixes:
+        if resolved.startswith(prefix + "/") or resolved == prefix:
+            raise click.BadParameter(
+                f"Refusing to write to sensitive system path: {resolved}",
+                param_hint="'-O'",
+            )
+    return resolved
+
+
+def _write_binary_output(output: str, data: bytes) -> None:
+    """Write binary data to output path with restrictive permissions (owner-only rwx)."""
+    resolved = _validate_output_path(output)
+    fd = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 @click.group()
@@ -85,8 +111,7 @@ def patch(path: str, offset: str, hex_data: str, output: str) -> None:
         bf = BinaryFile.from_path(path)
         p = Patch(offset=patch_offset, data=patch_bytes, description="CLI patch")
         result = apply_patches(bf, [p])
-        with open(output, "wb") as f:
-            f.write(result)
+        _write_binary_output(output, result)
         click.echo(f"Patched {len(patch_bytes)} bytes at offset {offset} → {output}")
     except Exception as exc:
         click.echo(f"Patch error: {exc}", err=True)
@@ -217,8 +242,7 @@ def generate(arch: str, fmt: str | None, asm: str, output: str) -> None:
         code = assembler.assemble(asm)
         builder = BinaryBuilder()
         bf = builder.set_arch(target_arch).set_format(target_fmt).add_code(code).build()
-        with open(output, "wb") as f:
-            f.write(bf.raw)
+        _write_binary_output(output, bf.raw)
         click.echo(f"Generated {len(bf.raw)} byte {target_fmt.value} binary → {output}")
     except Exception as exc:
         click.echo(f"Generate error: {exc}", err=True)
@@ -285,8 +309,7 @@ def hook(path: str, target: str, hook: str, output: str, arch: str) -> None:
     try:
         bf = BinaryFile.from_path(path)
         result = hook_function(bf, target_offset, hook_offset, Arch(arch))
-        with open(output, "wb") as f:
-            f.write(result.patched_binary.raw)
+        _write_binary_output(output, result.patched_binary.raw)
         click.echo(
             f"Hooked 0x{target_offset:x} → 0x{hook_offset:x}"
             f" ({result.hook_count} hook(s)) → {output}"
@@ -340,8 +363,7 @@ def harden(
             hardener.redirect(off, tgt)
 
         result = hardener.apply(bf)
-        with open(output, "wb") as f:
-            f.write(result.patched_binary.raw)
+        _write_binary_output(output, result.patched_binary.raw)
         click.echo(result.summary())
         click.echo(f"Output → {output}")
     except ValueError as exc:
@@ -427,6 +449,21 @@ def build(
     from binaryvibes.llm.agent import BuildAgent
     from binaryvibes.llm.provider import LLMError, create_provider
 
+    # Warn about API key exposure via command line
+    if api_key:
+        click.echo(
+            "WARNING: Passing API keys via --api-key exposes them in shell "
+            "history and process listings. Prefer BV_LLM_API_KEY env var.",
+            err=True,
+        )
+
+    # Validate output path before doing expensive LLM work
+    try:
+        _validate_output_path(output)
+    except click.BadParameter as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from None
+
     try:
         llm = create_provider(
             provider=provider,
@@ -437,6 +474,14 @@ def build(
     except LLMError as e:
         click.echo(f"Configuration error: {e}", err=True)
         raise SystemExit(1) from None
+
+    if run_verify:
+        click.echo(
+            "WARNING: --run-verify will execute LLM-generated machine code on "
+            "this system WITHOUT sandboxing. The binary can perform any action "
+            "the current user is permitted to do.",
+            err=True,
+        )
 
     target_arch = Arch(arch)
     target_fmt = BinaryFormat(fmt) if fmt else None
@@ -454,9 +499,8 @@ def build(
         click.echo(f"Build failed: {e}", err=True)
         raise SystemExit(1) from None
 
-    # Write the binary
-    with open(output, "wb") as f:
-        f.write(result.binary.raw)
+    # Write the binary with restrictive permissions
+    _write_binary_output(output, result.binary.raw)
 
     click.echo(f"Description: {result.description}")
     click.echo(f"Format:   {result.fmt.value}")

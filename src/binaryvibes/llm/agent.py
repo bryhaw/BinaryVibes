@@ -5,8 +5,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import stat
 import subprocess
 import tempfile
+import warnings
 from dataclasses import dataclass
 
 from binaryvibes.core.arch import Arch, BinaryFormat, detect_native_format
@@ -94,12 +96,33 @@ class BuildAgent:
         self.max_retries = max_retries
         self.verify = verify
         self.run_verify = run_verify
+        if self.run_verify:
+            warnings.warn(
+                "run_verify=True will execute LLM-generated machine code on this "
+                "system WITHOUT sandboxing. The binary can perform ANY action the "
+                "current user is permitted to do. Only use this with trusted LLM "
+                "providers and in disposable/sandboxed environments.",
+                stacklevel=2,
+            )
 
     def _run_binary(self, binary_data: bytes, timeout: float = 10.0) -> tuple[int, str]:
-        """Run a PE binary and capture output. Returns (exit_code, stdout)."""
-        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as f:
-            f.write(binary_data)
-            tmp_path = f.name
+        """Run a PE binary and capture output. Returns (exit_code, stdout).
+
+        WARNING: This executes LLM-generated machine code. The binary is
+        unsandboxed and can perform any operation the current user is
+        permitted to do (file I/O, network access, process creation, etc.).
+        """
+        fd, tmp_path = tempfile.mkstemp(suffix=".exe")
+        try:
+            os.write(fd, binary_data)
+            os.close(fd)
+            # Owner-only permissions (read+execute); no group/other access.
+            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
+        except Exception:
+            os.close(fd) if not os.get_inheritable(fd) else None  # noqa: SIM908
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
         try:
             kwargs: dict = {
@@ -112,12 +135,12 @@ class BuildAgent:
             if os.name == "nt":
                 kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
-            result = subprocess.run([tmp_path], **kwargs)
+            result = subprocess.run([tmp_path], **kwargs)  # noqa: S603
             return result.returncode, result.stdout
         except subprocess.TimeoutExpired:
-            return -1, "[TIMEOUT: program did not exit within 10 seconds]"
+            return -1, f"[TIMEOUT: program did not exit within {timeout} seconds]"
         except Exception as e:
-            return -1, f"[RUN ERROR: {e}]"
+            return -1, f"[RUN ERROR: {type(e).__name__}]"
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)

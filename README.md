@@ -184,4 +184,17 @@ The pre-baked helpers solve a real problem: the LLM knows *what* to do (call `Wi
 
 The result is a working binary in the 2–4KB range, running on bare metal, with no C source file, no Makefile, no `gcc` invocation, and no developer between the description and the executable.
 
+## Security
+
+BinaryVibes generates native machine code from LLM output. See
+[SECURITY.md](SECURITY.md) for the full security policy. Key points:
+
+- **`--run-verify` is dangerous.** It executes LLM-generated binaries without
+  sandboxing. Only use in disposable environments (VMs, containers).
+- **Use `BV_LLM_API_KEY` env var** instead of `--api-key` to avoid leaking
+  keys in shell history.
+- **Generated binaries have owner-only permissions** (0o700) to prevent
+  unauthorized execution.
+- **Dependencies are pinned to major version ranges** to limit supply chain risk.
+
 [View on GitHub →](https://github.com/bryhaw/BinaryVibes)

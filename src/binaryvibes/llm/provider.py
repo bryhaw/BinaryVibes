@@ -79,10 +79,10 @@ class OpenAIProvider(LLMProvider):
                 data = resp.json()
         except httpx.HTTPStatusError as e:
             raise LLMError(
-                f"LLM request failed ({e.response.status_code}): {e.response.text}"
+                f"LLM request failed (HTTP {e.response.status_code})"
             ) from e
         except httpx.RequestError as e:
-            raise LLMError(f"LLM request error: {e}") from e
+            raise LLMError(f"LLM request error: {type(e).__name__}") from e
 
         try:
             content = data["choices"][0]["message"]["content"]
@@ -90,7 +90,7 @@ class OpenAIProvider(LLMProvider):
             usage = data.get("usage")
             return LLMResponse(content=content, model=model, usage=usage)
         except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected response format: {data}") from e
+            raise LLMError("Unexpected response format from LLM provider") from e
 
 
 class GitHubModelsProvider(OpenAIProvider):
@@ -209,11 +209,10 @@ class AnthropicProvider(LLMProvider):
                 data = resp.json()
         except httpx.HTTPStatusError as e:
             raise LLMError(
-                f"Anthropic request failed ({e.response.status_code}): "
-                f"{e.response.text}"
+                f"Anthropic request failed (HTTP {e.response.status_code})"
             ) from e
         except httpx.RequestError as e:
-            raise LLMError(f"Anthropic request error: {e}") from e
+            raise LLMError(f"Anthropic request error: {type(e).__name__}") from e
 
         try:
             content = data["content"][0]["text"]
@@ -221,7 +220,7 @@ class AnthropicProvider(LLMProvider):
             usage = data.get("usage")
             return LLMResponse(content=content, model=model, usage=usage)
         except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected Anthropic response format: {data}") from e
+            raise LLMError("Unexpected response format from Anthropic API") from e
 
 
 def create_provider(
